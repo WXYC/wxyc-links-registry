@@ -20,6 +20,7 @@ import {
   factsSegments,
   formatPrice,
   initialGrapheme,
+  isFree,
   isPast,
   ogTitle,
   safeHttpUrl,
@@ -240,10 +241,28 @@ function footerBlock(): string {
  * the server cannot bake in a per-visitor value); `concert_id` is baked in,
  * null on the pages that have no show (their views and CTA taps still count).
  */
+/**
+ * The capture host: an absolute http(s) URL or the default. Empty or
+ * scheme-less values ("us.i.posthog.com") must fall back — the browser
+ * would resolve them relative to the page and beacon into this Worker's
+ * own 404, silently flatlining analytics while the key looks configured.
+ */
+function captureHost(configured: string | undefined): string {
+  if (configured !== undefined && configured !== "") {
+    try {
+      const url = new URL(configured);
+      if (url.protocol === "https:" || url.protocol === "http:") {
+        return configured.replace(/\/+$/, "");
+      }
+    } catch {
+      // Fall through to the default below.
+    }
+  }
+  return DEFAULT_POSTHOG_HOST;
+}
+
 function analyticsSnippet(concertId: number | null, analytics: AnalyticsConfig): string {
-  // `||` (not ??) is deliberate: an empty-string host must fall back too, or
-  // the endpoint would become a relative path that beacons into this Worker.
-  const host = (analytics.host || DEFAULT_POSTHOG_HOST).replace(/\/+$/, "");
+  const host = captureHost(analytics.host);
   const literal = (value: string): string => JSON.stringify(value).replaceAll("</", "<\\/");
   return `  <script>
   (function () {
@@ -329,26 +348,31 @@ function ticketCta(concert: Concert): TicketCta | null {
   const targetsVenuePage = eventUrl !== null;
   const venue = esc(concert.venue.name);
 
+  // Wording shared across status arms — single-site so a parity edit can
+  // never fork one copy from the other.
+  const seePageLabel = targetsVenuePage ? "See Venue Page" : "See Ticket Page";
+  const opensCaptionHtml = targetsVenuePage
+    ? `Opens ${venue}'s event page`
+    : "Opens the ticket page";
+
   switch (concert.status) {
     case "on_sale":
     case "rescheduled": {
       const price = formatPrice(concert.price_min, null);
       const labelHtml =
-        price === null || price === "Free" ? "Get Tickets" : `Get Tickets — ${esc(price)}`;
+        price === null || isFree(concert) ? "Get Tickets" : `Get Tickets — ${esc(price)}`;
       const captionHtml =
         concert.status === "rescheduled"
           ? targetsVenuePage
             ? `Rescheduled — opens ${venue}'s event page`
             : "Rescheduled — opens the ticket page"
-          : targetsVenuePage
-            ? `Opens ${venue}'s event page`
-            : "Opens the ticket page";
+          : opensCaptionHtml;
       return { href, labelHtml, captionHtml, prominent: true };
     }
     case "sold_out":
       return {
         href,
-        labelHtml: targetsVenuePage ? "See Venue Page" : "See Ticket Page",
+        labelHtml: seePageLabel,
         captionHtml: `Sold out here — ${venue} sometimes releases more.`,
         prominent: false,
       };
@@ -362,8 +386,8 @@ function ticketCta(concert: Concert): TicketCta | null {
     case "unknown":
       return {
         href,
-        labelHtml: targetsVenuePage ? "See Venue Page" : "See Ticket Page",
-        captionHtml: targetsVenuePage ? `Opens ${venue}'s event page` : "Opens the ticket page",
+        labelHtml: seePageLabel,
+        captionHtml: opensCaptionHtml,
         prominent: false,
       };
   }
@@ -504,8 +528,9 @@ ${footerBlock()}
 
 /**
  * The degraded page for upstream failures. Interpolates only values that
- * cannot throw — a URL string and the env-provided analytics config — and
- * renders with no arguments at all from the top-level catch.
+ * cannot throw — a URL string and the env-provided analytics config — so
+ * both the router's 502 branch and the top-level catch can always render it
+ * (the catch additionally keeps a plain-text fallback behind this).
  */
 export function renderUpstreamErrorPage(options: Partial<RenderOptions> = {}): string {
   const body = `<main class="sheet">

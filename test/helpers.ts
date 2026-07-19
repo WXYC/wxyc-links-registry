@@ -46,3 +46,20 @@ export function makeJessicaPratt(overrides: Partial<Concert> & Pick<Concert, "id
     ...overrides,
   };
 }
+
+/**
+ * Serializes a fixture as the TRUE wire shape: the live `GET /concerts/:id`
+ * carries fields this page does not model (`headlining_artist_id`,
+ * `venue.id`, `genres`, `similar_artists`), and priming with them pins the
+ * decoder's leniency — a strict-validator refactor must fail these suites,
+ * not just production.
+ */
+export function wireBody(concert: Concert): string {
+  return JSON.stringify({
+    ...concert,
+    headlining_artist_id: 88,
+    genres: ["folk", "singer-songwriter"],
+    similar_artists: ["Julie Byrne", "Weyes Blood"],
+    venue: { ...concert.venue, id: 7 },
+  });
+}
