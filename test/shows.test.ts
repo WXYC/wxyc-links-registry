@@ -247,14 +247,20 @@ describe("GET /shows/:id — live show", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("never caches an upstream response marked no-store", async () => {
-    const show = jessicaPratt();
-    primeConcert(show, { cacheControl: "no-store" });
+  it.each(["no-store", "private", "no-cache"])(
+    "never serves from cache when upstream says %s",
+    async (directive) => {
+      // no-cache means revalidate-before-use (RFC 9111); this Worker has no
+      // conditional-request machinery, so it must not serve the entry at all
+      // — it is the standard knob an operator flips during an incident.
+      const show = jessicaPratt();
+      primeConcert(show, { cacheControl: directive });
 
-    await worker.fetch(showUrl(show));
-    await worker.fetch(showUrl(show));
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-  });
+      await worker.fetch(showUrl(show));
+      await worker.fetch(showUrl(show));
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    }
+  );
 });
 
 describe("GET /shows/:id — hostile upstream data", () => {
@@ -484,6 +490,9 @@ describe("fetchConcert — CONCERTS_API_ORIGIN hygiene", () => {
     ["", "empty string (a relative URL would throw in the cache layer)"],
     ["api.wxyc.org", "scheme-less value"],
     [" https://api.wxyc.org/ ", "whitespace padding (URL parsing strips it; the composed string must too)"],
+    ["https://api.wxyc.org?x=1", "query residue (the path would land inside the query string)"],
+    ["https://api.wxyc.org#frag", "fragment residue (fetch would GET the API root)"],
+    ["https://api.wxyc.org#", "empty fragment (normalizes to the clean origin)"],
   ])("falls back to a clean default for %j (%s)", async (configured) => {
     const show = jessicaPratt();
     primeConcert(show);
@@ -656,6 +665,14 @@ describe("share-page analytics snippet", () => {
     });
     expect(html).toContain("https://us.i.posthog.com/i/v0/e/");
     expect(html).not.toContain('"us.i.posthog.com/i/v0/e/"');
+  });
+
+  it("normalizes a whitespace-padded PostHog host — a mid-URL space throws client-side", () => {
+    const html = renderShowPage(jessicaPratt(), {
+      requestOrigin: "https://wxyc.org",
+      analytics: { projectKey: "phc_test123", host: "https://eu.i.posthog.com " },
+    });
+    expect(html).toContain('"https://eu.i.posthog.com/i/v0/e/"');
   });
 });
 
