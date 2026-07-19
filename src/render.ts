@@ -24,6 +24,7 @@ import {
   isPast,
   ogTitle,
   safeHttpUrl,
+  safeImageUrl,
 } from "./format";
 import { ogImageUrl } from "./og-card";
 import { posterPair } from "./poster";
@@ -420,7 +421,7 @@ function statusPill(concert: Concert, passed: boolean): string {
 }
 
 function heroBlock(concert: Concert, passed: boolean, now: Date): string {
-  const imageUrl = safeHttpUrl(concert.image_url);
+  const imageUrl = safeImageUrl(concert.image_url);
   const gradient = posterPair(concert.venue.slug, concert.id);
   const backdrop =
     imageUrl === null

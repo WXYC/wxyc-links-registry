@@ -86,7 +86,7 @@ function decodeConcert(body: string): Concert | null {
 /**
  * The cache-control for a rebuilt positive entry: upstream's max-age capped
  * at the ceiling, the ceiling itself when upstream is silent, and null (do
- * not cache) when upstream says no-store/private.
+ * not cache) when upstream says no-store, no-cache, or private.
  */
 function positiveCacheControl(fetched: Response): string | null {
   const upstream = fetched.headers.get("cache-control") ?? "";

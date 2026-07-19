@@ -284,6 +284,27 @@ describe("GET /shows/:id — hostile upstream data", () => {
     // Both outbound URLs were unsafe, so the ticket CTA disappears entirely.
     expect(html).not.toContain('data-cta="tickets"');
   });
+
+  it("drops an http image_url to the gradient rather than emit mixed content", async () => {
+    const show = jessicaPratt({ image_url: "http://insecure.example.com/poster.jpg" });
+    primeConcert(show);
+    const response = await worker.fetch(showUrl(show));
+    const html = await response.text();
+
+    // An http <img> on the https share page is mixed content the browser
+    // blocks or force-upgrades; the hero must fall back to the poster gradient.
+    expect(html).not.toContain("http://insecure.example.com/poster.jpg");
+    expect(html).not.toContain("<img");
+    expect(html).toContain("linear-gradient(");
+  });
+
+  it("keeps an https image_url as the hero art", async () => {
+    const show = jessicaPratt({ image_url: "https://img.example.com/poster.jpg" });
+    primeConcert(show);
+    const response = await worker.fetch(showUrl(show));
+    const html = await response.text();
+    expect(html).toContain('<img class="art" src="https://img.example.com/poster.jpg"');
+  });
 });
 
 describe("GET /shows/:id — canonicalization", () => {
@@ -622,7 +643,10 @@ describe("share-page analytics snippet", () => {
     expect(html).toContain('"phc_test123"');
     expect(html).toContain("https://us.i.posthog.com");
     expect(html).toContain("concert_id");
-    expect(html).toContain(String(show.id));
+    // Pin the embedded value specifically — String(show.id) alone also
+    // matches the id in og:url/canonical/app-argument, so it would pass even
+    // if the snippet emitted the wrong concert_id.
+    expect(html).toContain(`var concertId = ${show.id};`);
   });
 
   it("renders the event title line when the source provides one", () => {
