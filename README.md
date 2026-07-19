@@ -11,7 +11,7 @@ This Worker owns exactly two route patterns on the apex — nothing else on wxyc
 | Route | Serves |
 |---|---|
 | `wxyc.org/.well-known/apple-app-site-association` (exact path) | The `applinks` AASA registering `/shows/*` for the WXYC app (`92V374HC38.org.wxyc.iphoneapp`). HTTP 200, `Content-Type: application/json`, no redirect, cacheable for an hour. |
-| `wxyc.org/shows/*` | The share pages. `/shows/<id>` renders a concert from Backend-Service's public `GET /concerts/:id`; slugged (`/shows/4821-jessica-pratt`), trailing-slash, and zero-padded forms 301 to the bare canonical id. `/shows/og-card.png` serves the static 1200x630 OG card. Unknown ids get a friendly 404, upstream failures a degraded 502 page that still offers the stream. |
+| `wxyc.org/shows/*` | The share pages. `/shows/<id>` renders a concert from Backend-Service's public `GET /concerts/:id`; slugged (`/shows/4821-jessica-pratt`), trailing-slash, and zero-padded forms 301 to the bare canonical id. `/shows/og-card.png` serves the static 1200x640 OG card. Unknown ids get a friendly 404, upstream failures a degraded 502 page that still offers the stream. |
 
 **The AASA route must stay an exact path — never a `/.well-known/*` wildcard.** GitHub Pages renews the origin's certificate through `/.well-known/acme-challenge/*`, and those requests must keep passing through to the origin untouched. A wildcard route would silently break cert renewal for all of wxyc.org.
 
@@ -22,7 +22,7 @@ This Worker owns exactly two route patterns on the apex — nothing else on wxyc
 - **Poster fallback.** Concerts without `image_url` get the app's deterministic `PosterGradient` (FNV-1a over `"<venue.slug>-<id>"` into the same 7-pair palette), so a show paints the same colors in the app and on its share page. Cross-language parity is pinned by tests.
 - **Safety.** Upstream strings are HTML-escaped at render time and upstream URLs must be absolute http(s) — scrapers feed the concerts table, so `javascript:` and friends are dropped, not rendered.
 - **Analytics.** When `POSTHOG_PROJECT_KEY` is configured the pages include a dependency-free inline snippet capturing `share_page_viewed {concert_id, os}` and `share_page_cta_tapped {cta}` against the PostHog capture API (`POSTHOG_API_HOST`, default `https://us.i.posthog.com`). With no key configured — the default — no analytics ship at all.
-- **OG image.** v1 is the static WXYC wordmark card (mockup variant A), embedded in the bundle and served at `/shows/og-card.png`. Regenerate with `swift scripts/generate-og-card.swift assets/og-card.png && node scripts/embed-og-card.mjs` (macOS only). The per-show generated poster image is a follow-up ticket (#2).
+- **OG image.** v1 is the static WXYC wordmark card (1200x640 brand asset committed at `assets/og-card.png`), embedded in the bundle and served at `/shows/og-card.png`. To update it, replace the asset with a fresh export from the design library and run `node scripts/embed-og-card.mjs`. The per-show generated poster image is a follow-up ticket (#2).
 
 ## Local development
 

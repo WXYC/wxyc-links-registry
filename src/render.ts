@@ -55,15 +55,20 @@ export interface RenderOptions {
 
 const SHELL_CSS = `
   :root {
-    --page: #101120; --card: #171a30;
-    --ink: #ffffff; --ink-dim: rgba(255,255,255,0.72); --ink-faint: rgba(255,255,255,0.46);
-    --glass-line: rgba(255,255,255,0.15);
-    --amber: #ff8940; --amber-ink: #ffc79a; --amber-line: rgba(255,137,64,0.55);
+    /* Sunset palette: stops lifted verbatim from the app-icon gradient
+       (rose -> salmon -> pink -> periwinkle); deep tones are darkened
+       periwinkle, not new hues. */
+    --rose: #e6a1bf; --salmon: #e98c8c; --pink: #e27db2;
+    --peri-light: #878dc1; --peri: #7e85c1; --peri-deep: #1e2142;
+    --card: rgba(26,24,52,0.72);
+    --ink: #ffffff; --ink-dim: rgba(255,255,255,0.75); --ink-faint: rgba(255,255,255,0.55);
+    --glass-line: rgba(255,255,255,0.22);
     --live: #34c759;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    background: var(--page); color: var(--ink);
+    background: linear-gradient(180deg, var(--rose) 0%, var(--salmon) 28%, var(--pink) 34%, var(--peri-light) 92%, var(--peri) 100%) var(--peri);
+    color: var(--ink);
     font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     min-height: 100vh; display: flex; flex-direction: column;
@@ -72,6 +77,7 @@ const SHELL_CSS = `
   .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
   .sheet {
     width: 100%; max-width: 430px; background: var(--card);
+    -webkit-backdrop-filter: blur(20px) saturate(1.2); backdrop-filter: blur(20px) saturate(1.2);
     border: 1px solid var(--glass-line); border-radius: 18px; overflow: hidden;
   }
   .hero { position: relative; aspect-ratio: 4 / 3.1; overflow: hidden; }
@@ -83,7 +89,7 @@ const SHELL_CSS = `
   }
   .hero .scrim {
     position: absolute; inset: 0;
-    background: linear-gradient(to bottom, rgba(0,0,0,0.15), rgba(0,0,0,0) 35%, rgba(16,17,32,0.95));
+    background: linear-gradient(to bottom, rgba(0,0,0,0.15), rgba(0,0,0,0) 35%, rgba(26,24,52,0.95));
   }
   .hero .facts { position: absolute; left: 16px; right: 16px; bottom: 13px; }
   .pill {
@@ -93,7 +99,7 @@ const SHELL_CSS = `
   .pill-live { background: var(--live); color: #06210d; }
   .pill-muted { background: rgba(255,255,255,0.18); color: var(--ink); }
   .pill-cancelled { background: #ff453a; color: #2b0503; }
-  .pill-amber { background: var(--amber); color: #33150a; }
+  .pill-accent { background: var(--pink); color: #3c1027; }
   h1 { font-size: 28px; font-weight: 800; letter-spacing: -0.3px; margin-bottom: 3px; }
   .billing, .meta {
     font: 600 11px/1.7 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -104,13 +110,13 @@ const SHELL_CSS = `
   .cta {
     display: block; text-align: center; text-decoration: none;
     font-weight: 700; font-size: 16px; padding: 14px; border-radius: 12px;
-    background: var(--amber); color: #33150a;
+    background: var(--ink); color: #2e3160;
   }
   .cta.ghost { background: rgba(255,255,255,0.1); color: var(--ink); border: 1px solid var(--glass-line); }
   .caption { font-size: 12px; color: var(--ink-faint); text-align: center; margin-top: -4px; }
   .passed {
-    font-size: 14px; text-align: center; color: var(--amber-ink);
-    background: rgba(255,137,64,0.1); border: 1px solid var(--amber-line);
+    font-size: 14px; text-align: center; color: #ffe1ee;
+    background: rgba(230,161,191,0.14); border: 1px solid rgba(230,161,191,0.55);
     border-radius: 12px; padding: 12px;
   }
   .listen {
@@ -128,13 +134,13 @@ const SHELL_CSS = `
     font: 600 10px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     letter-spacing: 1px; text-transform: uppercase; color: var(--ink-faint);
   }
-  footer a { color: var(--amber-ink); text-decoration: none; }
+  footer a { color: var(--rose); text-decoration: none; }
   .wordmark {
-    background: #17181d; padding: 44px 16px 40px; text-align: center;
+    background: var(--peri-deep); padding: 44px 16px 40px; text-align: center;
     font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   }
   .wordmark .wm { font-size: 34px; font-weight: 900; letter-spacing: 3px; }
-  .wordmark .fm { color: var(--amber); }
+  .wordmark .fm { color: var(--pink); }
   .wordmark .tag {
     margin-top: 7px; font-size: 10px; font-weight: 600;
     letter-spacing: 2px; text-transform: uppercase; color: var(--ink-faint);
@@ -165,14 +171,14 @@ function headBlock(input: HeadInput): string {
   <title>${input.title}</title>
   <meta name="description" content="${input.description}">
   <meta name="apple-itunes-app" content="app-id=${APP_STORE_ID}">
-  <meta name="theme-color" content="#101120">${canonical}
+  <meta name="theme-color" content="#e6a1bf">${canonical}
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="WXYC 89.3 FM">
   <meta property="og:title" content="${input.title}">
   <meta property="og:description" content="${input.description}">
   <meta property="og:image" content="${input.imageUrl}">
   <meta property="og:image:width" content="1200">
-  <meta property="og:image:height" content="630">
+  <meta property="og:image:height" content="640">
   <meta property="og:image:alt" content="${input.imageAlt}">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="${input.title}">
@@ -335,7 +341,7 @@ function statusPill(concert: Concert, passed: boolean): string {
     case "cancelled":
       return `<span class="pill pill-cancelled">CANCELLED</span>`;
     case "rescheduled":
-      return `<span class="pill pill-amber">RESCHEDULED</span>`;
+      return `<span class="pill pill-accent">RESCHEDULED</span>`;
     case "unknown":
       return "";
   }
