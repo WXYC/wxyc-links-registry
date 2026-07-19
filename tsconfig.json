@@ -7,6 +7,7 @@
     "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
+    "allowArbitraryExtensions": true,
     "noEmit": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
