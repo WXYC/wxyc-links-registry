@@ -28,6 +28,8 @@ const FNV_OFFSET_BASIS = 0xcbf29ce484222325n;
 const FNV_PRIME = 0x100000001b3n;
 const MASK_64 = 0xffffffffffffffffn;
 
+const utf8 = new TextEncoder();
+
 /**
  * Canonical 64-bit FNV-1a over the string's UTF-8 bytes (offset basis
  * 0xcbf29ce484222325, prime 0x100000001b3, XOR-then-multiply per byte).
@@ -35,7 +37,7 @@ const MASK_64 = 0xffffffffffffffffn;
  */
 export function fnv1a64(input: string): bigint {
   let hash = FNV_OFFSET_BASIS;
-  for (const byte of new TextEncoder().encode(input)) {
+  for (const byte of utf8.encode(input)) {
     hash ^= BigInt(byte);
     hash = (hash * FNV_PRIME) & MASK_64;
   }

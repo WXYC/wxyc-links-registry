@@ -17,17 +17,17 @@
 import { exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import type { Concert } from "../src/concert";
-import { renderShowPage } from "../src/render";
+import type { Env } from "../src/env";
+import { renderNotFoundPage, renderShowPage, renderUpstreamErrorPage } from "../src/render";
+import { fetchConcert } from "../src/upstream";
+import { guardOutboundFetch, makeJessicaPratt } from "./helpers";
 
 const worker = exports.default;
 
 let fetchSpy: MockInstance<typeof fetch>;
 
 beforeEach(() => {
-  fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-    const request = new Request(input, init);
-    throw new Error(`Unprimed outbound fetch in test: ${request.url}`);
-  });
+  fetchSpy = guardOutboundFetch();
 });
 
 afterEach(() => {
@@ -41,39 +41,9 @@ function nextId(): number {
   return lastId;
 }
 
-/**
- * A WXYC-canonical fixture show (Jessica Pratt at Cat's Cradle), dated far in
- * the future so the integration tests never trip the passed-show state — the
- * Worker reads the real clock; date-edge behavior is unit-tested in
- * format.test.ts with an injected now.
- */
+/** The shared fixture with a fresh id per call (see test/helpers.ts). */
 function jessicaPratt(overrides: Partial<Concert> = {}): Concert {
-  return {
-    id: nextId(),
-    venue: {
-      id: 7,
-      slug: "cats-cradle",
-      name: "Cat's Cradle",
-      city: "Carrboro",
-      state: "NC",
-      address: "300 E Main St, Carrboro, NC 27510",
-    },
-    starts_on: "2199-08-01",
-    starts_at: "2199-08-02T00:00:00.000Z",
-    doors_at: "2199-08-01T23:00:00.000Z",
-    headlining_artist_raw: "Jessica Pratt",
-    headlining_artist_id: 88,
-    title: null,
-    supporting_artists_raw: ["Julie Byrne"],
-    ticket_url: "https://www.etix.com/ticket/p/12345/jessica-pratt",
-    image_url: null,
-    event_url: "https://catscradle.com/event/jessica-pratt",
-    price_min: 22,
-    price_max: 25,
-    age_restriction: "All Ages",
-    status: "on_sale",
-    ...overrides,
-  };
+  return makeJessicaPratt({ id: nextId(), ...overrides });
 }
 
 /** Primes the fetch spy to answer `GET /concerts/:id` like production does. */
@@ -128,12 +98,24 @@ describe("GET /shows/:id — live show", () => {
     expect(html).toMatch(/og:description" content="[^"]*Heard on WXYC 89\.3 FM Chapel Hill\./);
   });
 
-  it("carries the Smart App Banner meta for the App Store listing", async () => {
+  it("carries the Smart App Banner meta with the show as its app-argument", async () => {
     const show = jessicaPratt();
     primeConcert(show);
     const response = await worker.fetch(showUrl(show));
     const html = await response.text();
-    expect(html).toContain('name="apple-itunes-app" content="app-id=353182815"');
+    // Without app-argument, tapping OPEN in Safari's banner would cold-launch
+    // the app with the concert context dropped — the one thing this page has.
+    expect(html).toContain(
+      `name="apple-itunes-app" content="app-id=353182815, app-argument=https://wxyc.org/shows/${show.id}"`
+    );
+  });
+
+  it("sends the standard hardening headers on page responses", async () => {
+    const show = jessicaPratt();
+    primeConcert(show);
+    const response = await worker.fetch(showUrl(show));
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("referrer-policy")).toBe("strict-origin-when-cross-origin");
   });
 
   it("renders the facts, billing, status pill, and live-stream player", async () => {
@@ -147,11 +129,24 @@ describe("GET /shows/:id — live show", () => {
     expect(html).toContain("Cat&#39;s Cradle, Carrboro");
     expect(html).toMatch(/Aug 1, 2199/);
     expect(html).toContain("Doors 7 PM");
-    expect(html).toContain("$22–25");
+    expect(html).toContain("$22–$25");
     expect(html).toContain("All Ages");
     expect(html).toContain("ON SALE");
     expect(html).toContain("<audio");
     expect(html).toContain("https://audio-mp3.ibiblio.org/wxyc.mp3");
+  });
+
+  it("labels the CTA with the entry price (mockup wording) but never '— Free'", async () => {
+    const priced = jessicaPratt();
+    primeConcert(priced);
+    const pricedHtml = await (await worker.fetch(showUrl(priced))).text();
+    expect(pricedHtml).toContain(">Get Tickets — $22<");
+
+    const free = jessicaPratt({ price_min: 0, price_max: 0 });
+    primeConcert(free);
+    const freeHtml = await (await worker.fetch(showUrl(free))).text();
+    expect(freeHtml).toContain(">Get Tickets<");
+    expect(freeHtml).not.toContain("Get Tickets —");
   });
 
   it("prefers event_url for the ticket CTA and links directions + the app", async () => {
@@ -226,55 +221,110 @@ describe("GET /shows/:id — hostile upstream data", () => {
 });
 
 describe("GET /shows/:id — canonicalization", () => {
-  it.each([
-    ["https://wxyc.org/shows/4821-jessica-pratt", "slugged"],
-    ["https://wxyc.org/shows/4821/", "trailing slash"],
-    ["https://wxyc.org/shows/04821", "leading zeros"],
-    ["https://wxyc.org/shows/4821-", "dangling hyphen"],
-  ])("301s %s to the bare canonical form (%s)", async (variant) => {
-    const response = await worker.fetch(variant, { redirect: "manual" });
+  it("301s a trailing slash to the bare canonical form", async () => {
+    const id = nextId();
+    const response = await worker.fetch(`https://wxyc.org/shows/${id}/`, { redirect: "manual" });
     expect(response.status).toBe(301);
-    expect(response.headers.get("location")).toBe("https://wxyc.org/shows/4821");
+    expect(response.headers.get("location")).toBe(`https://wxyc.org/shows/${id}`);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("301s leading zeros to the bare canonical form", async () => {
+    const id = nextId();
+    const response = await worker.fetch(`https://wxyc.org/shows/000${id}`, { redirect: "manual" });
+    expect(response.status).toBe(301);
+    expect(response.headers.get("location")).toBe(`https://wxyc.org/shows/${id}`);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("carries the query string through the 301 so attribution params survive", async () => {
+    const id = nextId();
+    const response = await worker.fetch(`https://wxyc.org/shows/${id}/?utm_source=messages`, {
+      redirect: "manual",
+    });
+    expect(response.status).toBe(301);
+    expect(response.headers.get("location")).toBe(
+      `https://wxyc.org/shows/${id}?utm_source=messages`
+    );
+  });
+
+  it("serves percent-encoded digits as the decoded id — never a truncated redirect", async () => {
+    const show = jessicaPratt();
+    primeConcert(show);
+    // Encode every digit (0-9 -> %30..%39): /shows/%34%38%32%31 style.
+    const encoded = String(show.id)
+      .split("")
+      .map((digit) => `%3${digit}`)
+      .join("");
+    const response = await worker.fetch(`https://wxyc.org/shows/${encoded}`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Jessica Pratt");
+  });
+
+  it("resolves a partially encoded id to the full id, not the raw-digit prefix", async () => {
+    const show = jessicaPratt();
+    primeConcert(show);
+    // Encode only the second digit: the historical failure 301'd this to the
+    // one-digit prefix — a different concert entirely.
+    const text = String(show.id);
+    const mixed = `${text[0]}%3${text[1]}${text.slice(2)}`;
+    const response = await worker.fetch(`https://wxyc.org/shows/${mixed}`, {
+      redirect: "manual",
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Jessica Pratt");
   });
 });
 
 describe("GET /shows/:id — misses and junk ids", () => {
   it("renders a friendly 404 with an upcoming pointer when the API knows no such show", async () => {
-    const missingId = nextId();
-    fetchSpy.mockImplementation(async (input, init) => {
-      const request = new Request(input, init);
-      const url = new URL(request.url);
-      if (url.origin === "https://api.wxyc.org" && url.pathname === `/concerts/${missingId}`) {
-        return new Response(JSON.stringify({ message: `No concert with id ${missingId}` }), {
-          status: 404,
-          headers: { "content-type": "application/json; charset=utf-8" },
-        });
-      }
-      throw new Error(`Unprimed outbound fetch in test: ${request.url}`);
+    const missing = jessicaPratt();
+    primeConcert(missing, {
+      status: 404,
+      body: JSON.stringify({ message: `No concert with id ${missing.id}` }),
     });
 
-    const response = await worker.fetch(`https://wxyc.org/shows/${missingId}`);
+    const response = await worker.fetch(showUrl(missing));
     const html = await response.text();
 
     expect(response.status).toBe(404);
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
     expect(response.headers.get("cache-control")).toBe("public, max-age=60");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("referrer-policy")).toBe("strict-origin-when-cross-origin");
     expect(html).toContain("couldn't find that show");
     expect(html).toContain("what's coming up");
+    // No show to hand off, so the Smart App Banner stays bare.
+    expect(html).toContain('name="apple-itunes-app" content="app-id=353182815"');
+    expect(html).not.toContain("app-argument");
   });
 
   it.each([
     ["https://wxyc.org/shows/jessica-pratt", "non-numeric id"],
+    ["https://wxyc.org/shows/6101-jessica-pratt", "slugged id (nothing emits slugs)"],
+    ["https://wxyc.org/shows/6102-", "dangling hyphen"],
     ["https://wxyc.org/shows/99999999999999999999", "overflow id"],
     ["https://wxyc.org/shows/0", "zero id"],
     ["https://wxyc.org/shows/", "no id"],
     ["https://wxyc.org/shows", "bare prefix"],
+    ["https://wxyc.org/shows/%E0%A4%A", "malformed percent-encoding"],
+    ["https://wxyc.org/shows/2026-08-01", "date-shaped path (future calendar namespace)"],
   ])("404s %s locally without calling upstream (%s)", async (url) => {
     const response = await worker.fetch(url);
     expect(response.status).toBe(404);
     expect(await response.text()).toContain("couldn't find that show");
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("404s an absurdly long digit run quickly instead of grinding the matcher", async () => {
+    const started = performance.now();
+    const response = await worker.fetch(`https://wxyc.org/shows/${"9".repeat(20_000)}/x`);
+    const elapsed = performance.now() - started;
+    expect(response.status).toBe(404);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    // The old adjacent-quantifier pattern took ~200ms+ here; the length cap
+    // plus the residue-free pattern keeps this in noise territory.
+    expect(elapsed).toBeLessThan(50);
   });
 });
 
@@ -288,6 +338,8 @@ describe("GET /shows/:id — upstream failures", () => {
 
     expect(response.status).toBe(502);
     expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("referrer-policy")).toBe("strict-origin-when-cross-origin");
     expect(html).toContain("trouble loading this show");
     // The stream player survives an API outage — the radio does not.
     expect(html).toContain("https://audio-mp3.ibiblio.org/wxyc.mp3");
@@ -310,6 +362,86 @@ describe("GET /shows/:id — upstream failures", () => {
 
     const response = await worker.fetch(showUrl(show));
     expect(response.status).toBe(502);
+  });
+
+  it("recovers immediately once upstream heals — a junk 200 must not poison the cache", async () => {
+    const show = jessicaPratt();
+
+    primeConcert(show, { body: "<html>surprise!</html>", contentType: "text/html" });
+    const poisoned = await worker.fetch(showUrl(show));
+    expect(poisoned.status).toBe(502);
+
+    primeConcert(show);
+    const healed = await worker.fetch(showUrl(show));
+    expect(healed.status).toBe(200);
+    expect(await healed.text()).toContain("Jessica Pratt");
+    // The junk body was never cached, so the healed request re-consulted upstream.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds the upstream wait with an abort signal so a stalled API cannot hang the page", async () => {
+    const show = jessicaPratt();
+    primeConcert(show);
+    await worker.fetch(showUrl(show));
+    const init = fetchSpy.mock.calls[0]?.[1];
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
+describe("fetchConcert — CONCERTS_API_ORIGIN hygiene", () => {
+  /** Primes the spy for a specific origin and returns the URLs it was asked for. */
+  function primeAtOrigin(concert: Concert, origin: string): string[] {
+    const seen: string[] = [];
+    fetchSpy.mockImplementation(async (input, init) => {
+      const request = new Request(input, init);
+      seen.push(request.url);
+      const url = new URL(request.url);
+      if (url.origin === origin && url.pathname === `/concerts/${concert.id}`) {
+        return new Response(JSON.stringify(concert), {
+          status: 200,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "public, max-age=300",
+          },
+        });
+      }
+      throw new Error(`Unprimed outbound fetch in test: ${request.url}`);
+    });
+    return seen;
+  }
+
+  it("strips trailing slashes so the upstream path never double-slashes (Express would 404 it)", async () => {
+    const show = jessicaPratt();
+    const seen = primeAtOrigin(show, "https://api.wxyc.org");
+    const env: Env = { CONCERTS_API_ORIGIN: "https://api.wxyc.org/" };
+    const lookup = await fetchConcert(show.id, env);
+    expect(lookup.kind).toBe("ok");
+    expect(seen).toEqual([`https://api.wxyc.org/concerts/${show.id}`]);
+  });
+
+  it("treats an empty-string origin as unset instead of building a relative URL", async () => {
+    const show = jessicaPratt();
+    const seen = primeAtOrigin(show, "https://api.wxyc.org");
+    const lookup = await fetchConcert(show.id, { CONCERTS_API_ORIGIN: "" });
+    expect(lookup.kind).toBe("ok");
+    expect(seen).toEqual([`https://api.wxyc.org/concerts/${show.id}`]);
+  });
+
+  it("falls back to the default origin when the binding is not an absolute http(s) URL", async () => {
+    const show = jessicaPratt();
+    const seen = primeAtOrigin(show, "https://api.wxyc.org");
+    const lookup = await fetchConcert(show.id, { CONCERTS_API_ORIGIN: "api.wxyc.org" });
+    expect(lookup.kind).toBe("ok");
+    expect(seen).toEqual([`https://api.wxyc.org/concerts/${show.id}`]);
+  });
+
+  it("honors a well-formed override verbatim", async () => {
+    const show = jessicaPratt();
+    const seen = primeAtOrigin(show, "https://staging.api.wxyc.org");
+    const env: Env = { CONCERTS_API_ORIGIN: "https://staging.api.wxyc.org" };
+    const lookup = await fetchConcert(show.id, env);
+    expect(lookup.kind).toBe("ok");
+    expect(seen).toEqual([`https://staging.api.wxyc.org/concerts/${show.id}`]);
   });
 });
 
@@ -339,6 +471,20 @@ describe("GET /shows/:id — passed and off-sale states", () => {
     expect(html).toMatch(
       /data-cta="tickets" href="https:\/\/catscradle\.com\/event\/jessica-pratt"/
     );
+  });
+
+  it("marks rescheduled shows with the app's exact caption wording", async () => {
+    const show = jessicaPratt({ status: "rescheduled" });
+    primeConcert(show);
+    const response = await worker.fetch(showUrl(show));
+    const html = await response.text();
+
+    expect(html).toContain("RESCHEDULED");
+    expect(html).toContain(">Get Tickets — $22<");
+    // BoxOfficeTicketPresenter re-authors the sentence with a lowercase
+    // "opens"; the share page must match it word for word.
+    expect(html).toContain("Rescheduled — opens Cat&#39;s Cradle's event page");
+    expect(html).not.toContain("Rescheduled — Opens");
   });
 
   it("marks sold-out shows without dropping the venue link", async () => {
@@ -377,6 +523,13 @@ describe("GET /shows/og-card.png — the static OG image", () => {
     const bytes = new Uint8Array(await response.arrayBuffer());
     expect(Array.from(bytes.slice(0, 4))).toEqual([0x89, 0x50, 0x4e, 0x47]);
     expect(bytes.length).toBeGreaterThan(10_000);
+
+    // The IHDR dimensions must match the og:image:width/height metas the
+    // pages declare — a swapped-in asset at other dimensions would make
+    // every share card lie to unfurl renderers.
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    expect(view.getUint32(16)).toBe(1200);
+    expect(view.getUint32(20)).toBe(640);
   });
 });
 
@@ -410,5 +563,48 @@ describe("share-page analytics snippet", () => {
       requestOrigin: "https://wxyc.org",
     });
     expect(html).toContain("Merge 40 Kickoff");
+  });
+
+  it("instruments the not-found page too, with a null concert_id", () => {
+    const html = renderNotFoundPage({
+      requestOrigin: "https://wxyc.org",
+      analytics: { projectKey: "phc_test123" },
+    });
+    expect(html).toContain('"share_page_viewed"');
+    expect(html).toContain("var concertId = null;");
+  });
+
+  it("instruments the degraded error page when the router has analytics config", () => {
+    const html = renderUpstreamErrorPage({
+      requestOrigin: "https://wxyc.org",
+      analytics: { projectKey: "phc_test123" },
+    });
+    expect(html).toContain('"share_page_viewed"');
+    expect(html).toContain("var concertId = null;");
+  });
+
+  it("treats an empty-string PostHog host as unset instead of beaconing into the void", () => {
+    const html = renderShowPage(jessicaPratt(), {
+      requestOrigin: "https://wxyc.org",
+      analytics: { projectKey: "phc_test123", host: "" },
+    });
+    expect(html).toContain("https://us.i.posthog.com/i/v0/e/");
+  });
+});
+
+describe("degraded error page og:image", () => {
+  it("points og:image at the serving origin, not a hardcoded apex", () => {
+    const html = renderUpstreamErrorPage({
+      requestOrigin: "https://wxyc-links-registry.workers.dev",
+    });
+    expect(html).toContain(
+      'property="og:image" content="https://wxyc-links-registry.workers.dev/shows/og-card.png"'
+    );
+  });
+
+  it("still renders with no options at all — the top-level catch depends on it", () => {
+    const html = renderUpstreamErrorPage();
+    expect(html).toContain("trouble loading this show");
+    expect(html).toContain('property="og:image" content="https://wxyc.org/shows/og-card.png"');
   });
 });

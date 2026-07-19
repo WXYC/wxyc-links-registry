@@ -12,6 +12,8 @@ import type { Concert } from "./concert";
 
 const NY_TIME_ZONE = "America/New_York";
 
+// Intl formatters are expensive to construct and cheap to reuse, so every
+// fixed-config formatter in this module lives at module scope.
 const isoDateFormatNY = new Intl.DateTimeFormat("en-CA", {
   timeZone: NY_TIME_ZONE,
   year: "numeric",
@@ -41,6 +43,9 @@ const minuteProbeNY = new Intl.DateTimeFormat("en-US", {
   timeZone: NY_TIME_ZONE,
   minute: "numeric",
 });
+
+const graphemeSegmenter =
+  "Segmenter" in Intl ? new Intl.Segmenter("en", { granularity: "grapheme" }) : null;
 
 /** Escapes the five HTML metacharacters for text and attribute contexts. */
 export function escapeHtml(value: string): string {
@@ -78,10 +83,8 @@ export function formatEventDate(startsOn: string, now: Date): string {
   if (Number.isNaN(date.getTime())) return startsOn;
   const formatted = calendarDateFormat.format(date);
   const eventYear = startsOn.slice(0, 4);
-  const currentYear = new Intl.DateTimeFormat("en-US", {
-    timeZone: NY_TIME_ZONE,
-    year: "numeric",
-  }).format(now);
+  // en-CA renders YYYY-MM-DD, so the first four characters are the NY year.
+  const currentYear = isoDateFormatNY.format(now).slice(0, 4);
   return eventYear === currentYear ? formatted : `${formatted}, ${eventYear}`;
 }
 
@@ -101,15 +104,16 @@ function formatAmount(value: number): string {
 }
 
 /**
- * Renders the price facts segment: "$22", "$22–25", or "Free" (price_min = 0
- * per the API contract). Null when no price is known.
+ * Renders the price facts segment, matching the iOS presenter's priceLabel
+ * shapes: "$22", "$22–$25" (dollar sign on both numbers), or "Free"
+ * (price_min = 0 per the API contract). Null when no price is known.
  */
 export function formatPrice(min: number | null, max: number | null): string | null {
   if (min === null && max === null) return null;
   if (min === 0 && (max === null || max === 0)) return "Free";
   if (min === null) return `$${formatAmount(max as number)}`;
   if (max === null || max === min) return `$${formatAmount(min)}`;
-  return `$${formatAmount(min)}–${formatAmount(max)}`;
+  return `$${formatAmount(min)}–$${formatAmount(max)}`;
 }
 
 /** Whether a venue-local calendar date is before today in America/New_York. */
@@ -123,25 +127,12 @@ export function ogTitle(concert: Concert): string {
 }
 
 /**
- * Composes the og:description — "Sat, Aug 1 · Doors 7 PM · $22–25 · All Ages.
- * Heard on WXYC 89.3 FM Chapel Hill." — omitting unknown segments, and
- * leading with the lifecycle state (passed/cancelled/sold out/rescheduled)
- * when it would change whether the recipient should get excited.
+ * The facts segments — date, doors-else-showtime, price, age restriction,
+ * unknowns omitted. The single source for both the hero facts line and the
+ * og:description, so the visible page and the unfurl card can never disagree.
  */
-export function buildDescription(concert: Concert, now: Date): string {
-  const segments: string[] = [];
-
-  if (isPast(concert.starts_on, now)) {
-    segments.push("This one's passed");
-  } else if (concert.status === "cancelled") {
-    segments.push("Cancelled");
-  } else if (concert.status === "sold_out") {
-    segments.push("Sold out");
-  } else if (concert.status === "rescheduled") {
-    segments.push("Rescheduled");
-  }
-
-  segments.push(formatEventDate(concert.starts_on, now));
+export function factsSegments(concert: Concert, now: Date): string[] {
+  const segments = [formatEventDate(concert.starts_on, now)];
 
   const doors = concert.doors_at === null ? null : formatTimeNY(concert.doors_at);
   const showTime = concert.starts_at === null ? null : formatTimeNY(concert.starts_at);
@@ -157,6 +148,38 @@ export function buildDescription(concert: Concert, now: Date): string {
     segments.push(concert.age_restriction);
   }
 
+  return segments;
+}
+
+/**
+ * The lifecycle lead for the og:description — present only when it would
+ * change whether the recipient should get excited. The switch is exhaustive
+ * over ConcertStatus so a new status cannot silently skip the description.
+ */
+function statusLead(concert: Concert, now: Date): string | null {
+  if (isPast(concert.starts_on, now)) return "This one's passed";
+  switch (concert.status) {
+    case "cancelled":
+      return "Cancelled";
+    case "sold_out":
+      return "Sold out";
+    case "rescheduled":
+      return "Rescheduled";
+    case "on_sale":
+    case "unknown":
+      return null;
+  }
+}
+
+/**
+ * Composes the og:description — "Sat, Aug 1 · Doors 7 PM · $22–$25 · All
+ * Ages. Heard on WXYC 89.3 FM Chapel Hill." — omitting unknown segments, and
+ * leading with the lifecycle state (passed/cancelled/sold out/rescheduled).
+ */
+export function buildDescription(concert: Concert, now: Date): string {
+  const lead = statusLead(concert, now);
+  const segments = lead === null ? [] : [lead];
+  segments.push(...factsSegments(concert, now));
   return `${segments.join(" · ")}. Heard on WXYC 89.3 FM Chapel Hill.`;
 }
 
@@ -182,9 +205,8 @@ export function initialGrapheme(name: string): string {
   const trimmed = name.trim();
   if (trimmed === "") return "♪";
   let first: string | undefined;
-  if ("Segmenter" in Intl) {
-    const segments = new Intl.Segmenter("en", { granularity: "grapheme" }).segment(trimmed);
-    first = [...segments][0]?.segment;
+  if (graphemeSegmenter !== null) {
+    first = [...graphemeSegmenter.segment(trimmed)][0]?.segment;
   }
   first ??= [...trimmed][0];
   return (first ?? "♪").toUpperCase();

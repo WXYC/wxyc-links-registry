@@ -9,16 +9,14 @@
 
 import { exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { guardOutboundFetch } from "./helpers";
 
 const worker = exports.default;
 const AASA_URL = "https://wxyc.org/.well-known/apple-app-site-association";
 
 // The AASA path never talks to the network; the guard proves it.
 beforeEach(() => {
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-    const request = new Request(input, init);
-    throw new Error(`Unprimed outbound fetch in test: ${request.url}`);
-  });
+  guardOutboundFetch();
 });
 
 afterEach(() => {
@@ -36,8 +34,16 @@ describe("AASA route", () => {
       applinks: {
         details: [
           {
-            appIDs: ["92V374HC38.org.wxyc.iphoneapp"],
-            components: [{ "/": "/shows/*" }],
+            // Release and Debug bundle ids: Debug is Xcode's default run
+            // configuration, and developer-mode testing does not waive appID
+            // matching — omit it and every dev-build tap opens Safari.
+            appIDs: ["92V374HC38.org.wxyc.iphoneapp", "92V374HC38.org.wxyc.iphoneappdebug"],
+            components: [
+              // Ordered: the OG image is an asset, not a share page — it must
+              // fall through to the browser, so its exclude precedes the wildcard.
+              { "/": "/shows/og-card.png", exclude: true },
+              { "/": "/shows/*" },
+            ],
           },
         ],
       },
