@@ -73,6 +73,18 @@ export function safeHttpUrl(value: string | null | undefined): string | null {
 }
 
 /**
+ * Like `safeHttpUrl` but https-only, for `<img src>`. The share page is
+ * served over https, so an http image would be mixed content the browser
+ * blocks or force-upgrades — dropping it lets the hero fall back cleanly to
+ * the poster gradient. (Ticket/event links stay http-tolerant: those are
+ * user-initiated top-level navigations, not subresources.)
+ */
+export function safeImageUrl(value: string | null | undefined): string | null {
+  const href = safeHttpUrl(value);
+  return href !== null && href.startsWith("https://") ? href : null;
+}
+
+/**
  * Formats a `YYYY-MM-DD` venue-local calendar date as "Sat, Aug 1", appending
  * the year ("Sat, Aug 1, 2027") when it differs from the current
  * America/New_York year.
