@@ -242,20 +242,30 @@ function footerBlock(): string {
  * null on the pages that have no show (their views and CTA taps still count).
  */
 /**
- * The capture host: an absolute http(s) URL or the default. Empty or
- * scheme-less values ("us.i.posthog.com") must fall back — the browser
- * would resolve them relative to the page and beacon into this Worker's
- * own 404, silently flatlining analytics while the key looks configured.
+ * The capture host: a PURE http(s) origin or the default, derived from the
+ * PARSED URL exactly like upstream's apiOrigin. Empty or scheme-less values
+ * ("us.i.posthog.com") would resolve relative to the page and beacon into
+ * this Worker's own 404; a padded value would put a space mid-endpoint and
+ * throw client-side — either way analytics silently flatline while the key
+ * looks configured.
  */
 function captureHost(configured: string | undefined): string {
-  if (configured !== undefined && configured !== "") {
-    try {
-      const url = new URL(configured);
-      if (url.protocol === "https:" || url.protocol === "http:") {
-        return configured.replace(/\/+$/, "");
+  if (configured !== undefined) {
+    const trimmed = configured.trim().replace(/\/+$/, "");
+    if (trimmed !== "") {
+      try {
+        const url = new URL(trimmed);
+        if (
+          (url.protocol === "https:" || url.protocol === "http:") &&
+          url.pathname === "/" &&
+          url.search === "" &&
+          url.hash === ""
+        ) {
+          return url.origin;
+        }
+      } catch {
+        // Fall through to the default below.
       }
-    } catch {
-      // Fall through to the default below.
     }
   }
   return DEFAULT_POSTHOG_HOST;

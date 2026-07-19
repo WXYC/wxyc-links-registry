@@ -42,12 +42,14 @@ export type ConcertLookup =
   | { kind: "upstream_error" };
 
 /**
- * The API origin, defended against silent-outage misconfigurations: padding
- * and trailing slashes are stripped (a slash would double-slash the path,
- * which Express does not match — every show would 404; WHATWG URL parsing
- * strips whitespace so validation alone would pass a padded value the
- * composed URL string chokes on), and empty or non-http(s) values fall back
- * to the default so the share surface stays up.
+ * The API origin, defended against silent-outage misconfigurations. The
+ * value must be a PURE http(s) origin: padding and trailing slashes are
+ * tolerated and normalized away, but query/fragment/path residue means the
+ * composed `/concerts/:id` would land somewhere else entirely, so anything
+ * impure falls back to the default and the share surface stays up. The
+ * return value is derived from the PARSED URL (`url.origin`), never the
+ * configured string — WHATWG parsing strips edge whitespace, so validating
+ * the raw string would bless a padded value the composed URL chokes on.
  */
 function apiOrigin(env: Env): string {
   const configured = env.CONCERTS_API_ORIGIN;
@@ -56,7 +58,14 @@ function apiOrigin(env: Env): string {
   if (trimmed === "") return DEFAULT_API_ORIGIN;
   try {
     const url = new URL(trimmed);
-    if (url.protocol === "https:" || url.protocol === "http:") return trimmed;
+    if (
+      (url.protocol === "https:" || url.protocol === "http:") &&
+      url.pathname === "/" &&
+      url.search === "" &&
+      url.hash === ""
+    ) {
+      return url.origin;
+    }
   } catch {
     // Fall through to the default below.
   }
@@ -81,7 +90,10 @@ function decodeConcert(body: string): Concert | null {
  */
 function positiveCacheControl(fetched: Response): string | null {
   const upstream = fetched.headers.get("cache-control") ?? "";
-  if (/no-store|private/i.test(upstream)) return null;
+  // no-cache means revalidate-before-use; with no conditional-request
+  // machinery here, that collapses to do-not-serve-from-cache — and it is
+  // the standard knob an operator flips mid-incident to stop stale serving.
+  if (/no-store|no-cache|private/i.test(upstream)) return null;
   const maxAge = /max-age=(\d+)/i.exec(upstream);
   const ttl = Math.min(maxAge === null ? POSITIVE_TTL_CAP_S : Number(maxAge[1]), POSITIVE_TTL_CAP_S);
   return `public, max-age=${ttl}`;
