@@ -6,9 +6,10 @@
 // the tests, and the guard throws on any unprimed outbound request, so a
 // test that slips a real network call fails loudly. Covers the happy path
 // (OG tags, Smart App Banner, stream, CTAs), CTA precedence, HTML-escaping
-// of hostile upstream strings, slug and trailing-slash canonicalization,
-// unknown/absurd ids, upstream 404/5xx degradation, edge caching, and the
-// embedded OG card asset.
+// of hostile upstream strings, trailing-slash/zero-pad canonicalization
+// (slugged forms deliberately 404 — nothing emits them), unknown/absurd
+// ids, upstream 404/5xx degradation, edge caching incl. header-hazard and
+// negative-cache behavior, and the bundled OG card asset.
 //
 // Each test uses a distinct concert id: the Worker caches upstream responses
 // in `caches.default`, which is shared across tests in this file, so reusing
@@ -20,7 +21,7 @@ import type { Concert } from "../src/concert";
 import type { Env } from "../src/env";
 import { renderNotFoundPage, renderShowPage, renderUpstreamErrorPage } from "../src/render";
 import { fetchConcert } from "../src/upstream";
-import { guardOutboundFetch, makeJessicaPratt } from "./helpers";
+import { guardOutboundFetch, makeJessicaPratt, wireBody } from "./helpers";
 
 const worker = exports.default;
 
@@ -46,25 +47,35 @@ function jessicaPratt(overrides: Partial<Concert> = {}): Concert {
   return makeJessicaPratt({ id: nextId(), ...overrides });
 }
 
-/** Primes the fetch spy to answer `GET /concerts/:id` like production does. */
+/**
+ * Primes the fetch spy to answer `GET /concerts/:id` like production does —
+ * the true wire body (extra fields included), overridable status/body/headers
+ * (`cacheControl: null` omits the header), and an alternate origin for the
+ * CONCERTS_API_ORIGIN suite. Requested URLs are read from fetchSpy.mock.calls.
+ */
 function primeConcert(
   concert: Concert,
-  reply: { status?: number; body?: string; contentType?: string } = {}
+  reply: {
+    status?: number;
+    body?: string;
+    contentType?: string;
+    cacheControl?: string | null;
+    headers?: Record<string, string>;
+    origin?: string;
+  } = {}
 ): void {
   const status = reply.status ?? 200;
-  const body = reply.body ?? JSON.stringify(concert);
-  const contentType = reply.contentType ?? "application/json; charset=utf-8";
+  const body = reply.body ?? wireBody(concert);
+  const origin = reply.origin ?? "https://api.wxyc.org";
+  const headers = new Headers(reply.headers ?? {});
+  headers.set("content-type", reply.contentType ?? "application/json; charset=utf-8");
+  const cacheControl = reply.cacheControl === undefined ? "public, max-age=300" : reply.cacheControl;
+  if (cacheControl !== null) headers.set("cache-control", cacheControl);
   fetchSpy.mockImplementation(async (input, init) => {
     const request = new Request(input, init);
     const url = new URL(request.url);
-    if (url.origin === "https://api.wxyc.org" && url.pathname === `/concerts/${concert.id}`) {
-      return new Response(body, {
-        status,
-        headers: {
-          "content-type": contentType,
-          "cache-control": "public, max-age=300",
-        },
-      });
+    if (url.origin === origin && url.pathname === `/concerts/${concert.id}`) {
+      return new Response(body, { status, headers });
     }
     throw new Error(`Unprimed outbound fetch in test: ${request.url}`);
   });
@@ -195,6 +206,55 @@ describe("GET /shows/:id — live show", () => {
     expect(await second.text()).toContain("Jessica Pratt");
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
+
+  it("caches correctly even when upstream marks the body content-encoded", async () => {
+    // workerd decompresses transparently but keeps the content-encoding
+    // header on the response; copying it onto the rebuilt cache entry makes
+    // every hit unreadable and silently turns the cache into passthrough.
+    const show = jessicaPratt();
+    primeConcert(show, { headers: { "content-encoding": "gzip" } });
+
+    const first = await worker.fetch(showUrl(show));
+    expect(first.status).toBe(200);
+    const second = await worker.fetch(showUrl(show));
+    expect(second.status).toBe(200);
+    expect(await second.text()).toContain("Jessica Pratt");
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("caches correctly even when upstream sets a cookie", async () => {
+    // The Cache API refuses to store any response bearing set-cookie; the
+    // rebuilt entry must not inherit it or caching silently shuts off.
+    const show = jessicaPratt();
+    primeConcert(show, { headers: { "set-cookie": "AWSALB=abc123; Path=/" } });
+
+    await worker.fetch(showUrl(show));
+    const second = await worker.fetch(showUrl(show));
+    expect(second.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds staleness with its own TTL when upstream omits Cache-Control", async () => {
+    // Absent upstream Cache-Control, workerd stores nothing while production
+    // would pin the entry for the default edge TTL (~2h) — both wrong. The
+    // Worker stamps its own bounded TTL so behavior is uniform and capped.
+    const show = jessicaPratt();
+    primeConcert(show, { cacheControl: null });
+
+    await worker.fetch(showUrl(show));
+    const second = await worker.fetch(showUrl(show));
+    expect(second.status).toBe(200);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("never caches an upstream response marked no-store", async () => {
+    const show = jessicaPratt();
+    primeConcert(show, { cacheControl: "no-store" });
+
+    await worker.fetch(showUrl(show));
+    await worker.fetch(showUrl(show));
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("GET /shows/:id — hostile upstream data", () => {
@@ -226,6 +286,7 @@ describe("GET /shows/:id — canonicalization", () => {
     const response = await worker.fetch(`https://wxyc.org/shows/${id}/`, { redirect: "manual" });
     expect(response.status).toBe(301);
     expect(response.headers.get("location")).toBe(`https://wxyc.org/shows/${id}`);
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -299,6 +360,20 @@ describe("GET /shows/:id — misses and junk ids", () => {
     expect(html).not.toContain("app-argument");
   });
 
+  it("negatively caches upstream 404s so a dead shared link cannot hammer the API", async () => {
+    const missing = jessicaPratt();
+    primeConcert(missing, {
+      status: 404,
+      body: JSON.stringify({ message: `No concert with id ${missing.id}` }),
+    });
+
+    const first = await worker.fetch(showUrl(missing));
+    expect(first.status).toBe(404);
+    const second = await worker.fetch(showUrl(missing));
+    expect(second.status).toBe(404);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     ["https://wxyc.org/shows/jessica-pratt", "non-numeric id"],
     ["https://wxyc.org/shows/6101-jessica-pratt", "slugged id (nothing emits slugs)"],
@@ -306,13 +381,23 @@ describe("GET /shows/:id — misses and junk ids", () => {
     ["https://wxyc.org/shows/99999999999999999999", "overflow id"],
     ["https://wxyc.org/shows/0", "zero id"],
     ["https://wxyc.org/shows/", "no id"],
-    ["https://wxyc.org/shows", "bare prefix"],
     ["https://wxyc.org/shows/%E0%A4%A", "malformed percent-encoding"],
     ["https://wxyc.org/shows/2026-08-01", "date-shaped path (future calendar namespace)"],
+    ["https://wxyc.org/shows/og%2Dcard.png", "percent-encoded og-card alias (AASA excludes only the literal path)"],
   ])("404s %s locally without calling upstream (%s)", async (url) => {
     const response = await worker.fetch(url);
     expect(response.status).toBe(404);
     expect(await response.text()).toContain("couldn't find that show");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("leaves bare /shows to the generic 404 — the production route pattern never matches it", async () => {
+    // Cloudflare's `wxyc.org/shows/*` requires the trailing slash, so bare
+    // /shows falls through to the origin in production; the Worker must not
+    // pretend otherwise on hosts where every path reaches it.
+    const response = await worker.fetch("https://wxyc.org/shows");
+    expect(response.status).toBe(404);
+    expect(await response.text()).toBe("Not found");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -389,59 +474,31 @@ describe("GET /shows/:id — upstream failures", () => {
 });
 
 describe("fetchConcert — CONCERTS_API_ORIGIN hygiene", () => {
-  /** Primes the spy for a specific origin and returns the URLs it was asked for. */
-  function primeAtOrigin(concert: Concert, origin: string): string[] {
-    const seen: string[] = [];
-    fetchSpy.mockImplementation(async (input, init) => {
-      const request = new Request(input, init);
-      seen.push(request.url);
-      const url = new URL(request.url);
-      if (url.origin === origin && url.pathname === `/concerts/${concert.id}`) {
-        return new Response(JSON.stringify(concert), {
-          status: 200,
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-            "cache-control": "public, max-age=300",
-          },
-        });
-      }
-      throw new Error(`Unprimed outbound fetch in test: ${request.url}`);
-    });
-    return seen;
+  /** URLs the spy actually received, straight from the mock's call log. */
+  function requestedUrls(): string[] {
+    return fetchSpy.mock.calls.map(([input, init]) => new Request(input, init).url);
   }
 
-  it("strips trailing slashes so the upstream path never double-slashes (Express would 404 it)", async () => {
+  it.each([
+    ["https://api.wxyc.org/", "trailing slash (Express would 404 the double-slash path)"],
+    ["", "empty string (a relative URL would throw in the cache layer)"],
+    ["api.wxyc.org", "scheme-less value"],
+    [" https://api.wxyc.org/ ", "whitespace padding (URL parsing strips it; the composed string must too)"],
+  ])("falls back to a clean default for %j (%s)", async (configured) => {
     const show = jessicaPratt();
-    const seen = primeAtOrigin(show, "https://api.wxyc.org");
-    const env: Env = { CONCERTS_API_ORIGIN: "https://api.wxyc.org/" };
-    const lookup = await fetchConcert(show.id, env);
+    primeConcert(show);
+    const lookup = await fetchConcert(show.id, { CONCERTS_API_ORIGIN: configured });
     expect(lookup.kind).toBe("ok");
-    expect(seen).toEqual([`https://api.wxyc.org/concerts/${show.id}`]);
-  });
-
-  it("treats an empty-string origin as unset instead of building a relative URL", async () => {
-    const show = jessicaPratt();
-    const seen = primeAtOrigin(show, "https://api.wxyc.org");
-    const lookup = await fetchConcert(show.id, { CONCERTS_API_ORIGIN: "" });
-    expect(lookup.kind).toBe("ok");
-    expect(seen).toEqual([`https://api.wxyc.org/concerts/${show.id}`]);
-  });
-
-  it("falls back to the default origin when the binding is not an absolute http(s) URL", async () => {
-    const show = jessicaPratt();
-    const seen = primeAtOrigin(show, "https://api.wxyc.org");
-    const lookup = await fetchConcert(show.id, { CONCERTS_API_ORIGIN: "api.wxyc.org" });
-    expect(lookup.kind).toBe("ok");
-    expect(seen).toEqual([`https://api.wxyc.org/concerts/${show.id}`]);
+    expect(requestedUrls()).toEqual([`https://api.wxyc.org/concerts/${show.id}`]);
   });
 
   it("honors a well-formed override verbatim", async () => {
     const show = jessicaPratt();
-    const seen = primeAtOrigin(show, "https://staging.api.wxyc.org");
+    primeConcert(show, { origin: "https://staging.api.wxyc.org" });
     const env: Env = { CONCERTS_API_ORIGIN: "https://staging.api.wxyc.org" };
     const lookup = await fetchConcert(show.id, env);
     expect(lookup.kind).toBe("ok");
-    expect(seen).toEqual([`https://staging.api.wxyc.org/concerts/${show.id}`]);
+    expect(requestedUrls()).toEqual([`https://staging.api.wxyc.org/concerts/${show.id}`]);
   });
 });
 
@@ -518,6 +575,7 @@ describe("GET /shows/og-card.png — the static OG image", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("image/png");
     expect(response.headers.get("cache-control")).toBe("public, max-age=86400");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
     expect(fetchSpy).not.toHaveBeenCalled();
 
     const bytes = new Uint8Array(await response.arrayBuffer());
@@ -589,6 +647,15 @@ describe("share-page analytics snippet", () => {
       analytics: { projectKey: "phc_test123", host: "" },
     });
     expect(html).toContain("https://us.i.posthog.com/i/v0/e/");
+  });
+
+  it("rejects a scheme-less PostHog host — a relative endpoint would beacon into this Worker", () => {
+    const html = renderShowPage(jessicaPratt(), {
+      requestOrigin: "https://wxyc.org",
+      analytics: { projectKey: "phc_test123", host: "us.i.posthog.com" },
+    });
+    expect(html).toContain("https://us.i.posthog.com/i/v0/e/");
+    expect(html).not.toContain('"us.i.posthog.com/i/v0/e/"');
   });
 });
 

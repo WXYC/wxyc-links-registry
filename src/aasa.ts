@@ -16,7 +16,12 @@
 //     open in the browser, not the app.
 //
 // Apple requires HTTP 200, Content-Type application/json, and no redirects.
-// Apple's CDN caches this file for days — get it right BEFORE first serve.
+// Apple's CDN caches this file for days — get it right BEFORE first serve,
+// and ship any future amendment (calendar-dispatch excludes when /shows
+// grows non-id pages, per-show OG image paths for ticket #2, an appclips
+// key) DAYS AHEAD of the behavior that depends on it. Component patterns
+// cannot express "digits only", so the iOS receiver must also fall back to
+// the browser for /shows paths it cannot parse.
 
 const APPLE_APP_SITE_ASSOCIATION = {
   applinks: {

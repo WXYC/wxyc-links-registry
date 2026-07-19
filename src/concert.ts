@@ -60,6 +60,21 @@ function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/** The concerts PK is a PostgreSQL int4; beyond it, no show can exist. */
+export const MAX_CONCERT_ID = 2_147_483_647;
+
+/**
+ * Database ids are positive int4 integers; anything else (4821.5, 1e21 —
+ * `Number.isInteger` alone admits integral floats) would flow into
+ * canonical/og:url/app-argument URLs that this Worker's own digits-only
+ * route rejects — a self-dead link.
+ */
+function asId(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_CONCERT_ID
+    ? value
+    : null;
+}
+
 /**
  * Decodes an upstream payload into a Concert, or returns null when the
  * payload is not usable. Required to render: `id`, a venue with `slug`,
@@ -70,7 +85,7 @@ export function parseConcert(payload: unknown): Concert | null {
   if (typeof payload !== "object" || payload === null) return null;
   const record = payload as Record<string, unknown>;
 
-  const id = asNumber(record.id);
+  const id = asId(record.id);
   const startsOn = asString(record.starts_on);
   const headliner = asString(record.headlining_artist_raw);
   if (id === null || startsOn === null || headliner === null) return null;

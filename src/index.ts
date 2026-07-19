@@ -8,15 +8,18 @@
 //      exact path only (never a /.well-known/* wildcard: GitHub Pages' ACME
 //      cert renewals transit /.well-known/acme-challenge/* and must keep
 //      passing through to the origin).
-//   2. GET /shows/<id>[-slug] — OG-tagged share pages for On Tour concerts,
-//      canonicalized to the bare /shows/<id> form, backed by Backend-Service
-//      `GET /concerts/:id` with ~5-minute edge caching. /shows/og-card.png
-//      serves the static OG image inside the same route space.
+//   2. GET /shows/<id> — OG-tagged share pages for On Tour concerts
+//      (trailing-slash and zero-padded forms canonicalize to the bare id;
+//      slugged or otherwise decorated paths 404 — nothing emits them),
+//      backed by Backend-Service `GET /concerts/:id` with ~5-minute edge
+//      caching. /shows/og-card.png serves the static OG image inside the
+//      same route space.
 //
 // Everything else 404s here; in production it never arrives (the routes are
 // exact), and on workers.dev the 404 keeps probes out of the way.
 
 import { aasaResponse } from "./aasa";
+import { MAX_CONCERT_ID } from "./concert";
 import type { Env } from "./env";
 import { OG_CARD_PATH, ogCardResponse } from "./og-card";
 import {
@@ -42,9 +45,6 @@ const SHOW_PATH_PATTERN = /^\/shows\/([0-9]+)\/?$/;
 /** Longer than any real /shows path; refusing early keeps junk input cheap. */
 const MAX_PATH_LENGTH = 256;
 
-/** The concerts PK is a PostgreSQL int4; beyond it, no show can exist. */
-const MAX_CONCERT_ID = 2_147_483_647;
-
 function htmlResponse(body: string, status: number, cacheControl: string): Response {
   return new Response(body, {
     status,
@@ -59,10 +59,15 @@ function htmlResponse(body: string, status: number, cacheControl: string): Respo
 
 function analyticsFromEnv(env: Env): AnalyticsConfig | undefined {
   if (env.POSTHOG_PROJECT_KEY === undefined || env.POSTHOG_PROJECT_KEY === "") return undefined;
-  return {
-    projectKey: env.POSTHOG_PROJECT_KEY,
-    ...(env.POSTHOG_API_HOST === undefined ? {} : { host: env.POSTHOG_API_HOST }),
-  };
+  return { projectKey: env.POSTHOG_PROJECT_KEY, host: env.POSTHOG_API_HOST };
+}
+
+function notFoundResponse(renderOptions: RenderOptions): Response {
+  return htmlResponse(renderNotFoundPage(renderOptions), 404, "public, max-age=60");
+}
+
+function upstreamErrorResponse(renderOptions: Partial<RenderOptions>): Response {
+  return htmlResponse(renderUpstreamErrorPage(renderOptions), 502, "no-store");
 }
 
 async function handleShowPage(
@@ -75,56 +80,64 @@ async function handleShowPage(
     case "ok":
       return htmlResponse(renderShowPage(lookup.concert, renderOptions), 200, "public, max-age=300");
     case "not_found":
-      return htmlResponse(renderNotFoundPage(renderOptions), 404, "public, max-age=60");
+      return notFoundResponse(renderOptions);
     case "upstream_error":
-      return htmlResponse(renderUpstreamErrorPage(renderOptions), 502, "no-store");
+      return upstreamErrorResponse(renderOptions);
   }
 }
 
 function handleShows(url: URL, env: Env): Promise<Response> | Response {
   const renderOptions = { requestOrigin: url.origin, analytics: analyticsFromEnv(env) };
-  const notFound = (): Response =>
-    htmlResponse(renderNotFoundPage(renderOptions), 404, "public, max-age=60");
+  const notFound = (): Response => notFoundResponse(renderOptions);
+
+  // The asset route matches the path AS SENT: the AASA excludes exactly this
+  // literal spelling, so a percent-encoded alias must 404 like other junk —
+  // serving it would hand iOS a universal link the exclude never covers.
+  if (url.pathname === OG_CARD_PATH) return ogCardResponse();
 
   if (url.pathname.length > MAX_PATH_LENGTH) return notFound();
 
-  // Unfurlers and pasted links sometimes percent-encode path characters, and
-  // WHATWG pathnames arrive still-encoded; ids are matched against the decoded
-  // form so `%34821` is show 34821, never a truncated redirect. Sequences that
-  // do not decode are junk.
-  let pathname: string;
-  try {
-    pathname = decodeURIComponent(url.pathname);
-  } catch {
-    return notFound();
+  // Ids match the raw path first; percent-decoding is an id-resolution
+  // fallback only (`%34821` is show 34821, never a truncated redirect).
+  // Paths that are not ids fall through UNTRANSFORMED — the rest of the
+  // namespace is reserved for the future calendar dispatch, which must see
+  // raw paths. Sequences that do not decode are junk.
+  let pathname = url.pathname;
+  let match = SHOW_PATH_PATTERN.exec(pathname);
+  if (match === null && pathname.includes("%")) {
+    try {
+      pathname = decodeURIComponent(url.pathname);
+    } catch {
+      return notFound();
+    }
+    match = SHOW_PATH_PATTERN.exec(pathname);
+  }
+  if (match === null) return notFound();
+
+  const digits = match[1] ?? "";
+  const canonicalId = digits.replace(/^0+/, "") || "0";
+
+  // Trailing slashes and leading zeros canonicalize to the bare
+  // /shows/<id> — one URL per show, everywhere. The query string rides
+  // along so attribution params survive the hop.
+  if (pathname.endsWith("/") || canonicalId !== digits) {
+    return new Response(null, {
+      status: 301,
+      headers: {
+        location: `${url.origin}/shows/${canonicalId}${url.search}`,
+        "cache-control": "public, max-age=3600",
+        "x-content-type-options": "nosniff",
+      },
+    });
   }
 
-  if (pathname === OG_CARD_PATH) return ogCardResponse();
-
-  const match = SHOW_PATH_PATTERN.exec(pathname);
-  if (match !== null) {
-    const digits = match[1] ?? "";
-    const canonicalId = digits.replace(/^0+/, "") || "0";
-
-    // Trailing slashes and leading zeros canonicalize to the bare
-    // /shows/<id> — one URL per show, everywhere. The query string rides
-    // along so attribution params survive the hop.
-    if (pathname.endsWith("/") || canonicalId !== digits) {
-      return new Response(null, {
-        status: 301,
-        headers: {
-          location: `${url.origin}/shows/${canonicalId}${url.search}`,
-          "cache-control": "public, max-age=3600",
-        },
-      });
-    }
-
-    const id = Number(canonicalId);
-    if (id >= 1 && id <= MAX_CONCERT_ID) {
-      return handleShowPage(id, renderOptions, env);
-    }
+  const id = Number(canonicalId);
+  if (id >= 1 && id <= MAX_CONCERT_ID) {
+    return handleShowPage(id, renderOptions, env);
   }
-
+  // Digit-shaped but impossible (zero, beyond the int4 PK): still a show-
+  // namespace miss. The fallthrough above must keep meaning exactly "not an
+  // id at all" so the future proxy branch swaps in cleanly.
   return notFound();
 }
 
@@ -140,7 +153,11 @@ function handle(request: Request, env: Env): Promise<Response> | Response {
 
   if (url.pathname === AASA_PATH) return aasaResponse();
 
-  if (url.pathname === "/shows" || url.pathname.startsWith("/shows/")) {
+  // Bare /shows deliberately falls through: the production route pattern
+  // `wxyc.org/shows/*` never matches it (Cloudflare patterns are literal, so
+  // it reaches the origin), and the Worker must not pretend otherwise on
+  // hosts where every path arrives here.
+  if (url.pathname.startsWith("/shows/")) {
     return handleShows(url, env);
   }
 
@@ -157,20 +174,15 @@ export default {
     } catch {
       // Belt and braces: a rendering bug degrades to the error page, never a
       // raw Worker exception. The page interpolates only throw-proof values
-      // (an origin string), and the plain-text fallback below covers even a
-      // failure of the error page itself.
+      // (request.url is always a valid absolute URL in workerd, and the
+      // analytics config is a pair of env strings), and the plain-text
+      // fallback covers even a failure of the error page itself — degraded
+      // traffic stays measurable rather than vanishing from analytics.
       try {
-        let origin: string | undefined;
-        try {
-          origin = new URL(request.url).origin;
-        } catch {
-          origin = undefined;
-        }
-        return htmlResponse(
-          renderUpstreamErrorPage(origin === undefined ? {} : { requestOrigin: origin }),
-          502,
-          "no-store"
-        );
+        return upstreamErrorResponse({
+          requestOrigin: new URL(request.url).origin,
+          analytics: analyticsFromEnv(env),
+        });
       } catch {
         return new Response("Service error", {
           status: 502,

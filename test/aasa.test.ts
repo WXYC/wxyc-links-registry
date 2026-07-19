@@ -53,6 +53,7 @@ describe("AASA route", () => {
   it("marks the association cacheable (dj-site AASA precedent: an hour)", async () => {
     const response = await worker.fetch(AASA_URL);
     expect(response.headers.get("cache-control")).toBe("public, max-age=3600");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
   });
 
   it("answers HEAD like GET, minus the body", async () => {

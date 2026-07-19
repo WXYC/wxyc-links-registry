@@ -13,7 +13,7 @@
     "deploy:production": "wrangler deploy --env production"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.6",

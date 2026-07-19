@@ -44,8 +44,7 @@ const minuteProbeNY = new Intl.DateTimeFormat("en-US", {
   minute: "numeric",
 });
 
-const graphemeSegmenter =
-  "Segmenter" in Intl ? new Intl.Segmenter("en", { granularity: "grapheme" }) : null;
+const graphemeSegmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
 
 /** Escapes the five HTML metacharacters for text and attribute contexts. */
 export function escapeHtml(value: string): string {
@@ -119,6 +118,15 @@ export function formatPrice(min: number | null, max: number | null): string | nu
 /** Whether a venue-local calendar date is before today in America/New_York. */
 export function isPast(startsOn: string, now: Date): boolean {
   return startsOn < isoDateFormatNY.format(now);
+}
+
+/**
+ * Whether the show is free, per the API's zero-price convention. The
+ * semantic fact — not formatPrice's display string — so presentation copy
+ * can change without breaking rules keyed on freeness.
+ */
+export function isFree(concert: Concert): boolean {
+  return concert.price_min === 0;
 }
 
 /** The og:title shape from the share-card mockups: artist at venue — WXYC. */
@@ -204,10 +212,6 @@ export function directionsUrl(concert: Concert): string {
 export function initialGrapheme(name: string): string {
   const trimmed = name.trim();
   if (trimmed === "") return "♪";
-  let first: string | undefined;
-  if (graphemeSegmenter !== null) {
-    first = [...graphemeSegmenter.segment(trimmed)][0]?.segment;
-  }
-  first ??= [...trimmed][0];
+  const first = [...graphemeSegmenter.segment(trimmed)][0]?.segment;
   return (first ?? "♪").toUpperCase();
 }
