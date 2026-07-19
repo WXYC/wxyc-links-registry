@@ -1,0 +1,30 @@
+# wxyc-links-registry — Cloudflare Worker serving the wxyc.org universal-link
+# surface: the applinks AASA and the /shows/:id share pages.
+#
+# Deploy safety layout (deliberate):
+#   - A bare `wrangler deploy` publishes ONLY to workers.dev. No routes, no
+#     production traffic. This is the default so nothing can touch the apex by
+#     accident.
+#   - Route attachment to wxyc.org is the explicit, post-soak step:
+#     `wrangler deploy --env production` (see README "Deploying").
+
+name = "wxyc-links-registry"
+main = "src/index.ts"
+compatibility_date = "2026-06-01"
+
+# Optional bindings, all defaulted in code when unset:
+#   CONCERTS_API_ORIGIN  — Backend-Service origin (default https://api.wxyc.org)
+#   POSTHOG_PROJECT_KEY  — enables the share-page analytics snippet when set
+#   POSTHOG_API_HOST     — PostHog ingest host (default https://us.i.posthog.com)
+# Set per-environment under [env.<name>.vars] or via `wrangler secret put`;
+# remember that [env.*] blocks do NOT inherit top-level [vars].
+
+[env.production]
+workers_dev = false
+routes = [
+  { pattern = "wxyc.org/shows/*", zone_name = "wxyc.org" },
+  # Exact path only — NEVER a `/.well-known/*` wildcard. GitHub Pages' ACME
+  # cert renewals for the origin transit `/.well-known/acme-challenge/*` and
+  # must keep passing through to the origin untouched.
+  { pattern = "wxyc.org/.well-known/apple-app-site-association", zone_name = "wxyc.org" },
+]
