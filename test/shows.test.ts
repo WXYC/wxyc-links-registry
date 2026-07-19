@@ -367,7 +367,7 @@ describe("GET /shows/:id — passed and off-sale states", () => {
 });
 
 describe("GET /shows/og-card.png — the static OG image", () => {
-  it("serves the embedded 1200x630 wordmark PNG", async () => {
+  it("serves the embedded 1200x640 wordmark PNG", async () => {
     const response = await worker.fetch("https://wxyc.org/shows/og-card.png");
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("image/png");
