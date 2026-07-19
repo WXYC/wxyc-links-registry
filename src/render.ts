@@ -8,35 +8,38 @@
 // optional inline analytics snippet, emitted only when a PostHog key is
 // configured.
 //
-// Safety rule: every upstream string passes through esc() exactly once, and
-// every upstream URL through safeHttpUrl(). Static copy is authored raw.
+// Safety rule: headBlock escapes its own inputs, and every upstream string in
+// the body passes through esc() exactly once; upstream URLs additionally pass
+// safeHttpUrl(). Static copy is authored raw.
 
 import type { Concert } from "./concert";
 import {
   buildDescription,
   directionsUrl,
   escapeHtml as esc,
-  formatEventDate,
+  factsSegments,
   formatPrice,
-  formatTimeNY,
   initialGrapheme,
   isPast,
   ogTitle,
   safeHttpUrl,
 } from "./format";
+import { ogImageUrl } from "./og-card";
 import { posterPair } from "./poster";
 
 /** The live stream the share page plays — RadioStation.swift's stream URL. */
-export const WXYC_STREAM_URL = "https://audio-mp3.ibiblio.org/wxyc.mp3";
+const WXYC_STREAM_URL = "https://audio-mp3.ibiblio.org/wxyc.mp3";
 
 /** WXYC Radio on the App Store (documented in wxyc-ios-64's README). */
-export const APP_STORE_ID = "353182815";
-export const APP_STORE_URL = `https://apps.apple.com/us/app/wxyc-radio/id${APP_STORE_ID}`;
+const APP_STORE_ID = "353182815";
+const APP_STORE_URL = `https://apps.apple.com/us/app/wxyc-radio/id${APP_STORE_ID}`;
 
 /** Share links are canonically on the apex, whatever host served this render. */
 const CANONICAL_ORIGIN = "https://wxyc.org";
 
 const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com";
+
+const OG_IMAGE_ALT = "WXYC 89.3 FM — Chapel Hill's student-run radio station";
 
 /** PostHog config for the inline snippet; absent = no analytics at all. */
 export interface AnalyticsConfig {
@@ -74,7 +77,6 @@ const SHELL_CSS = `
     min-height: 100vh; display: flex; flex-direction: column;
     align-items: center; justify-content: center; padding: 18px 14px;
   }
-  .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
   .sheet {
     width: 100%; max-width: 430px; background: var(--card);
     -webkit-backdrop-filter: blur(20px) saturate(1.2); backdrop-filter: blur(20px) saturate(1.2);
@@ -151,39 +153,51 @@ const SHELL_CSS = `
 `;
 
 interface HeadInput {
+  /** Raw text; headBlock escapes it for both the title and meta contexts. */
   title: string;
+  /** Raw text; headBlock escapes it. */
   description: string;
   canonicalUrl: string | null;
-  imageUrl: string;
-  imageAlt: string;
+  /** Origin serving this render; the og:image URL is derived from it. */
+  origin: string;
+  /** When set, the Smart App Banner hands this URL to the app on OPEN. */
+  appArgument?: string;
 }
 
-/** The head block that authors every share card. All inputs pre-escaped. */
+/** The head block that authors every share card. Escaping happens here. */
 function headBlock(input: HeadInput): string {
+  const title = esc(input.title);
+  const description = esc(input.description);
+  const imageUrl = esc(ogImageUrl(input.origin));
+  const imageAlt = esc(OG_IMAGE_ALT);
+  const banner =
+    input.appArgument === undefined
+      ? `app-id=${APP_STORE_ID}`
+      : `app-id=${APP_STORE_ID}, app-argument=${esc(input.appArgument)}`;
   const canonical =
     input.canonicalUrl === null
       ? ""
       : `
-  <link rel="canonical" href="${input.canonicalUrl}">
-  <meta property="og:url" content="${input.canonicalUrl}">`;
+  <link rel="canonical" href="${esc(input.canonicalUrl)}">
+  <meta property="og:url" content="${esc(input.canonicalUrl)}">`;
   return `<meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${input.title}</title>
-  <meta name="description" content="${input.description}">
-  <meta name="apple-itunes-app" content="app-id=${APP_STORE_ID}">
+  <title>${title}</title>
+  <meta name="description" content="${description}">
+  <meta name="apple-itunes-app" content="${banner}">
   <meta name="theme-color" content="#e6a1bf">${canonical}
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="WXYC 89.3 FM">
-  <meta property="og:title" content="${input.title}">
-  <meta property="og:description" content="${input.description}">
-  <meta property="og:image" content="${input.imageUrl}">
+  <meta property="og:title" content="${title}">
+  <meta property="og:description" content="${description}">
+  <meta property="og:image" content="${imageUrl}">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="640">
-  <meta property="og:image:alt" content="${input.imageAlt}">
+  <meta property="og:image:alt" content="${imageAlt}">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="${input.title}">
-  <meta name="twitter:description" content="${input.description}">
-  <meta name="twitter:image" content="${input.imageUrl}">
+  <meta name="twitter:title" content="${title}">
+  <meta name="twitter:description" content="${description}">
+  <meta name="twitter:image" content="${imageUrl}">
   <style>${SHELL_CSS}</style>`;
 }
 
@@ -203,10 +217,16 @@ ${body}
 /** The live-stream row — present on every page; the radio outlives the API. */
 function listenBlock(): string {
   return `    <section class="listen">
-      <p class="listen-title">Listen to WXYC</p>
+      <p class="listen-title" id="listen-title">Listen to WXYC</p>
       <p class="listen-sub">Live · 89.3 FM Chapel Hill</p>
-      <audio controls preload="none" src="${WXYC_STREAM_URL}"></audio>
+      <audio controls preload="none" aria-labelledby="listen-title" src="${WXYC_STREAM_URL}"></audio>
     </section>`;
+}
+
+/** The App Store CTA — one spelling of data-cta="open_app" everywhere. */
+function appStoreCta(label: string, style: "prominent" | "ghost"): string {
+  const classes = style === "ghost" ? "cta ghost" : "cta";
+  return `    <a class="${classes}" data-cta="open_app" href="${APP_STORE_URL}">${label}</a>`;
 }
 
 function footerBlock(): string {
@@ -217,16 +237,19 @@ function footerBlock(): string {
  * The inline PostHog capture snippet. Vanilla fetch/sendBeacon against the
  * capture endpoint — no external script, so unfurl bots and slow networks
  * never pay for it. `os` is derived client-side (the page is edge-cached, so
- * the server cannot bake in a per-visitor value); `concert_id` is baked in.
+ * the server cannot bake in a per-visitor value); `concert_id` is baked in,
+ * null on the pages that have no show (their views and CTA taps still count).
  */
-function analyticsSnippet(concertId: number, analytics: AnalyticsConfig): string {
-  const host = (analytics.host ?? DEFAULT_POSTHOG_HOST).replace(/\/+$/, "");
+function analyticsSnippet(concertId: number | null, analytics: AnalyticsConfig): string {
+  // `||` (not ??) is deliberate: an empty-string host must fall back too, or
+  // the endpoint would become a relative path that beacons into this Worker.
+  const host = (analytics.host || DEFAULT_POSTHOG_HOST).replace(/\/+$/, "");
   const literal = (value: string): string => JSON.stringify(value).replaceAll("</", "<\\/");
   return `  <script>
   (function () {
     var key = ${literal(analytics.projectKey)};
     var endpoint = ${literal(`${host}/i/v0/e/`)};
-    var concertId = ${concertId};
+    var concertId = ${concertId === null ? "null" : concertId};
     function osName() {
       var ua = navigator.userAgent || "";
       if (/iPhone|iPad|iPod/.test(ua)) return "ios";
@@ -277,6 +300,11 @@ function analyticsSnippet(concertId: number, analytics: AnalyticsConfig): string
   </script>`;
 }
 
+function maybeAnalytics(concertId: number | null, analytics: AnalyticsConfig | undefined): string {
+  return analytics === undefined ? "" : `
+${analyticsSnippet(concertId, analytics)}`;
+}
+
 interface TicketCta {
   href: string;
   /** Ready-to-render HTML: static copy raw, embedded data already escaped. */
@@ -289,7 +317,10 @@ interface TicketCta {
 /**
  * The ticket-slot CTA, mirroring the iOS BoxOfficeTicketPresenter: target is
  * event_url over ticket_url (`ctaURL` precedence), and the wording never
- * claims more than the status supports.
+ * claims more than the status supports. One deliberate departure, from the
+ * approved mockup (on-tour-share-cards.html §web-cta): the label carries the
+ * entry price ("Get Tickets — $22") because the page has no stats row —
+ * except a free show, which reads plain "Get Tickets", never "— Free".
  */
 function ticketCta(concert: Concert): TicketCta | null {
   const eventUrl = safeHttpUrl(concert.event_url);
@@ -302,9 +333,16 @@ function ticketCta(concert: Concert): TicketCta | null {
     case "on_sale":
     case "rescheduled": {
       const price = formatPrice(concert.price_min, null);
-      const labelHtml = price === null ? "Get Tickets" : `Get Tickets — ${esc(price)}`;
-      const where = targetsVenuePage ? `Opens ${venue}'s event page` : "Opens the ticket page";
-      const captionHtml = concert.status === "rescheduled" ? `Rescheduled — ${where}` : where;
+      const labelHtml =
+        price === null || price === "Free" ? "Get Tickets" : `Get Tickets — ${esc(price)}`;
+      const captionHtml =
+        concert.status === "rescheduled"
+          ? targetsVenuePage
+            ? `Rescheduled — opens ${venue}'s event page`
+            : "Rescheduled — opens the ticket page"
+          : targetsVenuePage
+            ? `Opens ${venue}'s event page`
+            : "Opens the ticket page";
       return { href, labelHtml, captionHtml, prominent: true };
     }
     case "sold_out":
@@ -347,24 +385,6 @@ function statusPill(concert: Concert, passed: boolean): string {
   }
 }
 
-/** The hero facts line: date · doors/time · price · age, unknowns omitted. */
-function factsLine(concert: Concert, now: Date): string {
-  const segments = [formatEventDate(concert.starts_on, now)];
-  const doors = concert.doors_at === null ? null : formatTimeNY(concert.doors_at);
-  const showTime = concert.starts_at === null ? null : formatTimeNY(concert.starts_at);
-  if (doors !== null) {
-    segments.push(`Doors ${doors}`);
-  } else if (showTime !== null) {
-    segments.push(showTime);
-  }
-  const price = formatPrice(concert.price_min, concert.price_max);
-  if (price !== null) segments.push(price);
-  if (concert.age_restriction !== null && concert.age_restriction !== "") {
-    segments.push(concert.age_restriction);
-  }
-  return segments.join(" · ");
-}
-
 function heroBlock(concert: Concert, passed: boolean, now: Date): string {
   const imageUrl = safeHttpUrl(concert.image_url);
   const gradient = posterPair(concert.venue.slug, concert.id);
@@ -395,7 +415,7 @@ function heroBlock(concert: Concert, passed: boolean, now: Date): string {
       ${statusPill(concert, passed)}
       <h1>${esc(concert.headlining_artist_raw)}</h1>${support}
       <p class="meta">${esc(concert.venue.name)}, ${esc(concert.venue.city)}</p>
-      <p class="meta">${esc(factsLine(concert, now))}</p>${eventTitle}
+      <p class="meta">${esc(factsSegments(concert, now).join(" · "))}</p>${eventTitle}
     </div>
   </header>`;
 }
@@ -410,7 +430,7 @@ export function renderShowPage(concert: Concert, options: RenderOptions): string
   if (passed) {
     actions.push(
       `    <p class="passed">This one's passed — here's what's coming up on WXYC's On Tour.</p>`,
-      `    <a class="cta" data-cta="open_app" href="${APP_STORE_URL}">See what's coming up in the WXYC app</a>`,
+      appStoreCta("See what's coming up in the WXYC app", "prominent"),
       listenBlock()
     );
   } else {
@@ -424,7 +444,7 @@ export function renderShowPage(concert: Concert, options: RenderOptions): string
     actions.push(
       listenBlock(),
       `    <a class="cta ghost" data-cta="directions" href="${esc(directionsUrl(concert))}">Directions to ${esc(concert.venue.name)}</a>`,
-      `    <a class="cta ghost" data-cta="open_app" href="${APP_STORE_URL}">Open in the WXYC app</a>`
+      appStoreCta("Open in the WXYC app", "ghost")
     );
   }
 
@@ -434,16 +454,15 @@ ${heroBlock(concert, passed, now)}
 ${actions.join("\n")}
   </section>
 ${footerBlock()}
-</main>
-${options.analytics === undefined ? "" : analyticsSnippet(concert.id, options.analytics)}`;
+</main>${maybeAnalytics(concert.id, options.analytics)}`;
 
   return page(
     headBlock({
-      title: esc(ogTitle(concert)),
-      description: esc(buildDescription(concert, now)),
-      canonicalUrl: esc(canonicalUrl),
-      imageUrl: esc(`${options.requestOrigin}/shows/og-card.png`),
-      imageAlt: "WXYC 89.3 FM — Chapel Hill's student-run radio station",
+      title: ogTitle(concert),
+      description: buildDescription(concert, now),
+      canonicalUrl,
+      origin: options.requestOrigin,
+      appArgument: canonicalUrl,
     }),
     body
   );
@@ -466,29 +485,29 @@ ${wordmarkBlock()}
     <p>It may have come and gone, or the link got scrambled on the way here. Here's what's coming up instead:</p>
   </div>
   <section class="actions">
-    <a class="cta" data-cta="open_app" href="${APP_STORE_URL}">See what's coming up in the WXYC app</a>
+${appStoreCta("See what's coming up in the WXYC app", "prominent")}
 ${listenBlock()}
   </section>
 ${footerBlock()}
-</main>`;
+</main>${maybeAnalytics(null, options.analytics)}`;
   return page(
     headBlock({
       title: "Show not found — WXYC 89.3 FM",
       description:
         "We couldn't find that show. See what's coming up around the Triangle in the WXYC app, and listen live to Chapel Hill's student-run radio.",
       canonicalUrl: null,
-      imageUrl: esc(`${options.requestOrigin}/shows/og-card.png`),
-      imageAlt: "WXYC 89.3 FM — Chapel Hill's student-run radio station",
+      origin: options.requestOrigin,
     }),
     body
   );
 }
 
 /**
- * The degraded page for upstream failures. Deliberately free of any dynamic
- * interpolation so the top-level catch can always render it.
+ * The degraded page for upstream failures. Interpolates only values that
+ * cannot throw — a URL string and the env-provided analytics config — and
+ * renders with no arguments at all from the top-level catch.
  */
-export function renderUpstreamErrorPage(): string {
+export function renderUpstreamErrorPage(options: Partial<RenderOptions> = {}): string {
   const body = `<main class="sheet">
 ${wordmarkBlock()}
   <div class="notice">
@@ -497,18 +516,17 @@ ${wordmarkBlock()}
   </div>
   <section class="actions">
 ${listenBlock()}
-    <a class="cta ghost" data-cta="open_app" href="${APP_STORE_URL}">Open in the WXYC app</a>
+${appStoreCta("Open in the WXYC app", "ghost")}
   </section>
 ${footerBlock()}
-</main>`;
+</main>${maybeAnalytics(null, options.analytics)}`;
   return page(
     headBlock({
       title: "WXYC 89.3 FM",
       description:
         "Chapel Hill's student-run radio station. Freeform radio from the basement of the Student Union since 1977.",
       canonicalUrl: null,
-      imageUrl: "https://wxyc.org/shows/og-card.png",
-      imageAlt: "WXYC 89.3 FM — Chapel Hill's student-run radio station",
+      origin: options.requestOrigin ?? CANONICAL_ORIGIN,
     }),
     body
   );

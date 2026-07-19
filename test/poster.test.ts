@@ -20,14 +20,20 @@ describe("fnv1a64", () => {
   });
 
   it("folds multi-byte UTF-8 like the Swift implementation (utf8 view)", () => {
-    // "café" exercises a 2-byte UTF-8 sequence; the fold is over UTF-8 bytes.
-    expect(fnv1a64("café")).toBe(fnv1a64("café"));
-    expect(fnv1a64("café")).not.toBe(fnv1a64("cafe"));
+    // Swift-generated constants (the app's PosterGradient.swift compiled
+    // standalone, cross-checked against an independent FNV-1a): the fold is
+    // over UTF-8 bytes with NO Unicode normalization, so NFC and NFD forms
+    // of the same text hash differently — exactly as in the app. Literals
+    // are written as escapes so the encoding under test is unambiguous.
+    expect(fnv1a64("caf\u00e9")).toBe(0x48e8823acfa40d89n); // NFC cafe with e-acute
+    expect(fnv1a64("cafe")).toBe(0xb5387d90e8589028n);
+    expect(fnv1a64("cafe\u0301")).toBe(0x14ecc3ece0723bb7n); // NFD (combining acute) differs from NFC
   });
 });
 
 describe("posterIndex — Swift parity", () => {
   // Generated with the app's PosterGradient (fnv1a("<slug>-<id>") % 7).
+  // The last three exercise multi-byte UTF-8 slugs; escapes keep NFC certain.
   const vectors: Array<[slug: string, id: number, hash: bigint, index: number]> = [
     ["cats-cradle-back-room", 1, 0x6bedfc6290ab378an, 4],
     ["cats-cradle", 4821, 0x12fbf64b3b90a11en, 1],
@@ -35,6 +41,10 @@ describe("posterIndex — Swift parity", () => {
     ["motorco-music-hall", 123456, 0x35611ca28d25a736n, 4],
     ["the-pinhook", 2, 0x72f5fc05bf0b297en, 6],
     ["kings", 99, 0x3339e9353153512cn, 3],
+    ["local-506", 99999, 0xca19b9a5f8a36b72n, 4],
+    ["caf\u00e9", 1, 0x6387e9d1d4a681c7n, 5],
+    ["csillagrabl\u00f3k", 4821, 0x2d4de2b210e162aan, 6],
+    ["motorco-m\u00fczik-hall", 77, 0xd521c303e93427c8n, 6],
   ];
 
   it.each(vectors)("hashes %s-%i like the app", (slug, id, hash, index) => {

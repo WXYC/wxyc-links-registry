@@ -10,9 +10,11 @@
 /** Lifecycle state per the `ConcertStatus` schema, plus the local "unknown". */
 export type ConcertStatus = "on_sale" | "sold_out" | "cancelled" | "rescheduled" | "unknown";
 
-/** The venue object embedded in a Concert. */
+/**
+ * The venue fields this page renders (the wire object carries more — e.g.
+ * `id` — which the decoder deliberately does not model).
+ */
 export interface ConcertVenue {
-  id: number;
   slug: string;
   name: string;
   city: string;
@@ -20,7 +22,10 @@ export interface ConcertVenue {
   address: string | null;
 }
 
-/** One concert, as served by `GET /concerts/:id`. */
+/**
+ * The Concert fields this page renders. An honest subset of the wire model:
+ * fields nothing reads (e.g. `headlining_artist_id`) are not decoded.
+ */
 export interface Concert {
   id: number;
   venue: ConcertVenue;
@@ -32,7 +37,6 @@ export interface Concert {
   doors_at: string | null;
   /** Headliner billing exactly as the source displays it. */
   headlining_artist_raw: string;
-  headlining_artist_id: number | null;
   /** Event name when distinct from the artist billing. */
   title: string | null;
   supporting_artists_raw: string[];
@@ -91,7 +95,6 @@ export function parseConcert(payload: unknown): Concert | null {
   return {
     id,
     venue: {
-      id: asNumber(rawVenue.id) ?? 0,
       slug,
       name,
       city,
@@ -102,7 +105,6 @@ export function parseConcert(payload: unknown): Concert | null {
     starts_at: asString(record.starts_at),
     doors_at: asString(record.doors_at),
     headlining_artist_raw: headliner,
-    headlining_artist_id: asNumber(record.headlining_artist_id),
     title: asString(record.title),
     supporting_artists_raw: supporting,
     ticket_url: asString(record.ticket_url),

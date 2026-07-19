@@ -20,35 +20,17 @@ import {
   safeHttpUrl,
 } from "../src/format";
 import type { Concert } from "../src/concert";
+import { makeJessicaPratt } from "./helpers";
 
-/** A WXYC-canonical fixture show: Jessica Pratt at Cat's Cradle. */
+/** The shared fixture pinned to a fixed id and 2026 dates for the injected now. */
 function jessicaPratt(overrides: Partial<Concert> = {}): Concert {
-  return {
+  return makeJessicaPratt({
     id: 4821,
-    venue: {
-      id: 7,
-      slug: "cats-cradle",
-      name: "Cat's Cradle",
-      city: "Carrboro",
-      state: "NC",
-      address: "300 E Main St, Carrboro, NC 27510",
-    },
     starts_on: "2026-08-01",
     starts_at: "2026-08-02T00:00:00.000Z",
     doors_at: "2026-08-01T23:00:00.000Z",
-    headlining_artist_raw: "Jessica Pratt",
-    headlining_artist_id: 88,
-    title: null,
-    supporting_artists_raw: ["Julie Byrne"],
-    ticket_url: "https://www.etix.com/ticket/p/12345/jessica-pratt",
-    image_url: null,
-    event_url: "https://catscradle.com/event/jessica-pratt",
-    price_min: 22,
-    price_max: 25,
-    age_restriction: "All Ages",
-    status: "on_sale",
     ...overrides,
-  };
+  });
 }
 
 const now = new Date("2026-07-18T21:00:00.000Z");
@@ -110,8 +92,8 @@ describe("formatTimeNY", () => {
 });
 
 describe("formatPrice", () => {
-  it("renders a range with an en dash", () => {
-    expect(formatPrice(22, 25)).toBe("$22–25");
+  it("renders a range with a dollar sign on both numbers, like the app's priceLabel", () => {
+    expect(formatPrice(22, 25)).toBe("$22–$25");
   });
 
   it("renders a single price", () => {
@@ -154,7 +136,7 @@ describe("ogTitle", () => {
 describe("buildDescription", () => {
   it("composes date · doors · price · age plus the station credit", () => {
     expect(buildDescription(jessicaPratt(), now)).toBe(
-      "Sat, Aug 1 · Doors 7 PM · $22–25 · All Ages. Heard on WXYC 89.3 FM Chapel Hill."
+      "Sat, Aug 1 · Doors 7 PM · $22–$25 · All Ages. Heard on WXYC 89.3 FM Chapel Hill."
     );
   });
 
@@ -172,7 +154,7 @@ describe("buildDescription", () => {
   it("falls back to the show time when doors are unknown", () => {
     const noDoors = jessicaPratt({ doors_at: null });
     expect(buildDescription(noDoors, now)).toBe(
-      "Sat, Aug 1 · 8 PM · $22–25 · All Ages. Heard on WXYC 89.3 FM Chapel Hill."
+      "Sat, Aug 1 · 8 PM · $22–$25 · All Ages. Heard on WXYC 89.3 FM Chapel Hill."
     );
   });
 
