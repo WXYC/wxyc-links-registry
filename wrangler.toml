@@ -12,6 +12,13 @@ name = "wxyc-links-registry"
 main = "src/index.ts"
 compatibility_date = "2026-06-01"
 
+# The OG card ships inside the bundle as a binary module (no base64, no
+# runtime decode). Both wrangler and @cloudflare/vitest-pool-workers read
+# this rule, so the import resolves identically in dev, tests, and deploys.
+rules = [
+  { type = "Data", globs = ["**/*.png"] },
+]
+
 # Optional bindings, all defaulted in code when unset:
 #   CONCERTS_API_ORIGIN  — Backend-Service origin (default https://api.wxyc.org)
 #   POSTHOG_PROJECT_KEY  — enables the share-page analytics snippet when set
