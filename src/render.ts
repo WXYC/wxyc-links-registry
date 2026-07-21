@@ -225,10 +225,36 @@ function listenBlock(): string {
     </section>`;
 }
 
-/** The App Store CTA — one spelling of data-cta="open_app" everywhere. */
+/** The App Store CTA — one spelling of data-cta="open_app" everywhere. Used
+ * where the page has no single show to open (browse "what's coming up", the
+ * upstream-error page): the store is the only sensible target. */
 function appStoreCta(label: string, style: "prominent" | "ghost"): string {
   const classes = style === "ghost" ? "cta ghost" : "cta";
   return `    <a class="${classes}" data-cta="open_app" href="${APP_STORE_URL}">${label}</a>`;
+}
+
+/**
+ * The custom-scheme deep link that opens the installed app straight to a
+ * concert. A universal (https) link is suppressed by iOS when it is tapped
+ * from a page on the wxyc.org apex itself, so the on-page "Open in the app"
+ * button and the Smart App Banner's app-argument must both use the scheme,
+ * not the https share URL, to route an installed app to the show.
+ */
+function appConcertDeepLink(concertId: number): string {
+  return `wxyc://concert/${concertId}`;
+}
+
+/**
+ * The "Open in the WXYC app" button for a page that knows its concert:
+ * deep-links via the wxyc:// scheme, so an installed app opens straight to the
+ * show. Visitors without the app are served by the native Smart App Banner
+ * (its app-argument is the same scheme link), which routes them to the App
+ * Store — so the button needs no JS fallback of its own. Same
+ * data-cta="open_app" as ``appStoreCta`` so both spellings count as one tap in
+ * analytics.
+ */
+function openInAppCta(concertId: number, label: string): string {
+  return `    <a class="cta ghost" data-cta="open_app" href="${appConcertDeepLink(concertId)}">${label}</a>`;
 }
 
 function footerBlock(): string {
@@ -479,7 +505,7 @@ export function renderShowPage(concert: Concert, options: RenderOptions): string
     actions.push(
       listenBlock(),
       `    <a class="cta ghost" data-cta="directions" href="${esc(directionsUrl(concert))}">Directions to ${esc(concert.venue.name)}</a>`,
-      appStoreCta("Open in the WXYC app", "ghost")
+      openInAppCta(concert.id, "Open in the WXYC app")
     );
   }
 
@@ -497,7 +523,7 @@ ${footerBlock()}
       description: buildDescription(concert, now),
       canonicalUrl,
       origin: options.requestOrigin,
-      appArgument: canonicalUrl,
+      appArgument: appConcertDeepLink(concert.id),
     }),
     body
   );
