@@ -114,10 +114,12 @@ describe("GET /shows/:id — live show", () => {
     primeConcert(show);
     const response = await worker.fetch(showUrl(show));
     const html = await response.text();
-    // Without app-argument, tapping OPEN in Safari's banner would cold-launch
-    // the app with the concert context dropped — the one thing this page has.
+    // The app-argument is the wxyc:// scheme, not the https share URL: OPEN
+    // delivers it through onOpenURL, and the https universal link is suppressed
+    // when it originates on the wxyc.org apex, so only the scheme routes the
+    // installed app to the concert instead of cold-launching to the home screen.
     expect(html).toContain(
-      `name="apple-itunes-app" content="app-id=353182815, app-argument=https://wxyc.org/shows/${show.id}"`
+      `name="apple-itunes-app" content="app-id=353182815, app-argument=wxyc://concert/${show.id}"`
     );
   });
 
@@ -171,9 +173,22 @@ describe("GET /shows/:id — live show", () => {
     );
     expect(html).toContain("Get Tickets");
     expect(html).toMatch(/data-cta="directions" href="https:\/\/maps\.apple\.com\/\?q=Cat/);
-    expect(html).toMatch(
-      /data-cta="open_app" href="https:\/\/apps\.apple\.com\/us\/app\/wxyc-radio\/id353182815"/
-    );
+    expect(html).toContain(`data-cta="open_app" href="wxyc://concert/${show.id}"`);
+  });
+
+  it("opens the installed app via the wxyc:// scheme, with the Smart App Banner as the no-app fallback", async () => {
+    const show = jessicaPratt();
+    primeConcert(show);
+    const html = await (await worker.fetch(showUrl(show))).text();
+    // The in-page button is a scheme link — a universal link tapped from the
+    // wxyc.org apex never hands off to the app — so an installed app opens
+    // straight to the show.
+    expect(html).toContain(`data-cta="open_app" href="wxyc://concert/${show.id}"`);
+    // No in-page JS fallback: the native Smart App Banner (the app-argument
+    // above) is the installed-vs-not handler, so the live-show page ships no
+    // click-timer script and carries no App Store link of its own.
+    expect(html).not.toContain('[href^="wxyc:"]');
+    expect(html).not.toContain("apps.apple.com");
   });
 
   it("falls back to ticket_url when the venue has no event page (iOS ctaURL precedence)", async () => {
