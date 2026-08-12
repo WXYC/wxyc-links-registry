@@ -1,6 +1,7 @@
 {
   "name": "wxyc-links-registry",
   "version": "0.1.0",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "private": true,
   "description": "Universal-link registry and share pages for wxyc.org: the applinks AASA and /shows/:id OG share pages, served by a Cloudflare Worker.",
   "type": "module",
